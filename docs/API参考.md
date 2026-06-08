@@ -119,10 +119,24 @@ print(reply)
 
 #### `reset()`
 
-清空对话历史，重置 Agent 到初始状态。
+清空对话历史，创建新会话（新 UUID），旧会话保留在数据库中。
 
 ```python
 agent.reset()
+```
+
+---
+
+#### `async rename_conversation(title: str)`
+
+重命名当前会话标题。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `title` | `str` | 新标题 |
+
+```python
+await agent.rename_conversation("关于微服务架构的讨论")
 ```
 
 ---
@@ -137,13 +151,13 @@ soul_agent.core.conversation.Conversation
 
 #### `__init__()`
 
-初始化空对话。自动生成唯一 `conversation_id`，内部维护 `messages` 列表。
+初始化空对话。自动生成唯一 UUID `conversation_id`，内部维护 `messages` 列表。
 
 ```python
 from soul_agent.core.conversation import Conversation
 
 conv = Conversation()
-print(conv.conversation_id)  # UUID 字符串
+print(conv.conversation_id)  # 自动生成的 UUID 字符串
 ```
 
 ---
@@ -219,6 +233,20 @@ conv.add_message({"role": "assistant", "content": "收到"})
 ```python
 conv.clear()
 ```
+
+---
+
+#### `set_persist_callback(callback)`
+
+注入消息持久化回调。`add_turn()` 和 `add_message()` 会自动通过此回调将消息写入数据库。
+
+回调签名：`async def callback(conversation_id, role, content, tool_calls)`
+
+```python
+conv.set_persist_callback(agent._persist_message)
+```
+
+> `add_turn()` 和 `add_message()` 在调用此回调时采用 fire-and-forget 模式（`asyncio.ensure_future`），不阻塞主流程。
 
 ---
 
@@ -465,6 +493,60 @@ all_facts = await mm.list_all(memory_type="fact")
 
 ---
 
+---
+
+### 对话持久化方法（MemoryManager）
+
+以下方法桥接至 LongTermMemory，用于管理历史会话。
+
+#### `async create_conversation(title="") -> str`
+
+创建新会话。
+
+```python
+conv_id = await mm.create_conversation(title="新对话")
+```
+
+#### `async create_conversation_with_id(conversation_id, title="")`
+
+使用预生成 ID 创建会话。
+
+```python
+await mm.create_conversation_with_id(agent.conversation.conversation_id)
+```
+
+#### `async save_conversation_turn(conversation_id, user_input, assistant_reply)`
+
+持久化一轮用户-助手消息对。
+
+```python
+await mm.save_conversation_turn(conv_id, "你好", "你好！")
+```
+
+#### `async list_conversations(limit=50)`
+
+列出历史会话。
+
+```python
+conversations = await mm.list_conversations()
+```
+
+#### `async get_conversation_messages(conversation_id) -> list[dict]`
+
+加载某会话的全部消息。
+
+```python
+messages = await mm.get_conversation_messages(conv_id)
+```
+
+#### `async update_conversation_title(conversation_id, title)`
+
+重命名会话。
+
+```python
+await mm.update_conversation_title(conv_id, "重要讨论")
+```
+
 #### `async summarize_conversation() -> str`
 
 对当前对话历史生成摘要文本。
@@ -678,6 +760,117 @@ await ltm.update_access("a1b2c3d4-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
 
 ```python
 await ltm.delete("a1b2c3d4-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+```
+
+---
+
+### ConversationEntry
+
+```
+soul_agent.memory.long_term.ConversationEntry
+```
+
+会话条目数据类，表示一次持久化的对话记录。
+
+**字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | `str` | 唯一标识符（UUID） |
+| `title` | `str` | 会话标题 |
+| `created_at` | `datetime` | 创建时间 |
+| `updated_at` | `datetime` | 最后更新时间 |
+| `message_count` | `int` | 消息数量 |
+
+```python
+from soul_agent.memory.long_term import ConversationEntry
+
+conv: ConversationEntry
+print(f"标题: {conv.title}")
+print(f"消息数: {conv.message_count}")
+print(f"更新时间: {conv.updated_at}")
+```
+
+---
+
+### 对话持久化方法（LongTermMemory）
+
+以下方法用于会话与消息的持久化存储。
+
+#### `async create_conversation(title="") -> str`
+
+创建新会话，返回 `conversation_id`。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `title` | `str` | `""` | 会话标题 |
+
+```python
+conv_id = await ltm.create_conversation(title="技术讨论")
+```
+
+---
+
+#### `async create_conversation_with_id(conversation_id, title="") -> str`
+
+使用预生成 ID 创建会话（`INSERT OR IGNORE` 语义，重复调用无副作用）。
+
+```python
+conv_id = await ltm.create_conversation_with_id(
+    "my-custom-uuid", title="指定ID会话"
+)
+```
+
+---
+
+#### `async save_message(conversation_id, role, content, tool_calls=None) -> str`
+
+保存一条消息到指定会话。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `conversation_id` | `str` | 会话 ID |
+| `role` | `str` | 消息角色（`user` / `assistant` / `tool`） |
+| `content` | `str` | 消息内容 |
+| `tool_calls` | `str \| None` | JSON 序列化的工具调用记录 |
+
+```python
+await ltm.save_message(conv_id, "user", "你好")
+await ltm.save_message(conv_id, "assistant", "你好！有什么可以帮你的？")
+```
+
+---
+
+#### `async list_conversations(limit=50) -> list[ConversationEntry]`
+
+列出所有会话，按更新时间倒序，含消息数量。
+
+```python
+conversations = await ltm.list_conversations()
+for c in conversations:
+    print(f"{c.title} — {c.message_count} 条消息")
+```
+
+---
+
+#### `async get_conversation_messages(conversation_id) -> list[dict]`
+
+获取某个会话的全部消息（按创建时间正序）。
+
+```python
+messages = await ltm.get_conversation_messages(conv_id)
+for msg in messages:
+    print(f"[{msg['role']}] {msg['content']}")
+```
+
+---
+
+#### `async update_conversation_title(conversation_id, title)`
+
+重命名会话。
+
+```python
+await ltm.update_conversation_title(conv_id, "新的标题")
 ```
 
 ---
@@ -1641,9 +1834,24 @@ renderer.render_memory_list(memories)
 
 ---
 
+#### `render_conversation_list(conversations)`
+
+以 Rich Table 表格渲染历史会话列表。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `conversations` | `list[ConversationEntry]` | 会话条目列表 |
+
+```python
+conversations = await agent.memory.list_conversations()
+renderer.render_conversation_list(conversations)
+```
+
+---
+
 #### `render_help()`
 
-渲染帮助信息，显示所有可用命令。
+渲染帮助信息，显示所有可用命令（含 `/history`、`/name`）。
 
 ```python
 renderer.render_help()
@@ -1746,7 +1954,7 @@ soul_agent.app
 
 #### `async create_agent(config=None) -> Agent`
 
-创建并初始化一个完整的 Agent 实例，包括配置加载、LLM 客户端创建、记忆系统初始化、工具注册等全部流程。
+创建并初始化一个完整的 Agent 实例，包括配置加载、LLM 客户端创建、记忆系统初始化、工具注册、首会话预创建及持久化回调注入等全部流程。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|

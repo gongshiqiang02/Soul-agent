@@ -1,4 +1,5 @@
 """对话持久化测试"""
+import asyncio
 
 import pytest
 
@@ -47,6 +48,7 @@ class TestConversationPersistence:
         await ltm.initialize()
 
         await ltm.create_conversation(title="旧会话")
+        await asyncio.sleep(0.01)  # Ensure different timestamps
         c2 = await ltm.create_conversation(title="新会话")
         await ltm.save_message(c2, "user", "hello")  # updates c2's updated_at
 

@@ -3,7 +3,6 @@
 import json
 import uuid
 import asyncio
-from dataclasses import dataclass, field
 
 
 class Conversation:
