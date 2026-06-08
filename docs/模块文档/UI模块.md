@@ -50,6 +50,7 @@ class Renderer:
     def __init__(self, theme_name: str = "monokai"):
         self.console = Console()
         self.theme = get_theme(theme_name)
+        self._plan_live: Live | None = None  # 计划面板 Live 上下文
 ```
 
 初始化时创建一个 Rich `Console`，并根据主题名获取颜色配置。
@@ -84,6 +85,9 @@ def render_user_input(self, text: str):
 ```python
 def render_assistant(self, text: str):
     self.console.print(f"\n[{self.theme['assistant_color']}]🤖 Soul-agent:[/]")
+    if not text or not text.strip():
+        self.console.print("  [dim](Agent 无输出)[/]")
+        return
     try:
         md = Markdown(text)
         self.console.print(md)
@@ -96,6 +100,7 @@ def render_assistant(self, text: str):
 1. 默认将助手回复作为 Markdown 渲染。
 2. 如果 Markdown 渲染失败，回退为普通文本。
 3. 渲染颜色来自当前主题。
+4. 空内容防御：当 Agent 返回空白（如 max_iterations 耗尽）时显示 `(Agent 无输出)` 而非空白行。
 
 这允许模型输出代码块、列表、标题等 Markdown 内容，终端中仍能保持较好的可读性。
 
@@ -109,17 +114,50 @@ def render_tool_call(self, tool_name: str, args: dict):
     )
 ```
 
-该方法由 Agent 的 `on_tool_call` 回调触发：
+该方法由 Agent 的 `on_tool_call` 回调触发。当前只显示工具名称，没有展示完整参数，避免终端输出过长。
+
+### 3.6 工具结果渲染
 
 ```python
-agent.set_callbacks(
-    on_tool_call=lambda name, args: renderer.render_tool_call(name, args),
-)
+def render_tool_result(self, tool_name: str, success: bool, output: str, error: str | None = None):
+    """渲染工具执行结果"""
+    display = output[:300] + ("..." if len(output) > 300 else "")
+    if success:
+        self.console.print(
+            f"  [{self.theme['tool_color']}]✅ {tool_name}[/] [dim]{display}[/]",
+            style="dim",
+        )
+    else:
+        self.console.print(
+            f"  [{self.theme['error_color']}]❌ {tool_name}: {error or display}[/]",
+            style="dim",
+        )
 ```
 
-当前只显示工具名称，没有展示完整参数，避免终端输出过长。
+该方法由 Agent 的 `on_tool_result` 回调触发：
 
-### 3.6 错误与提示信息
+- **成功**：绿色 `✅ tool_name` + 输出摘要（截断 300 字符）
+- **失败**：红色 `❌ tool_name` + 错误信息
+
+解决了之前"调用工具后看不到执行结果"的问题。
+
+### 3.7 计划进度面板
+
+```python
+def _build_plan_panel(self, tracker) -> Panel:
+    """构建计划面板"""
+    # 展示任务名、完成进度（done/total）、每个步骤的状态和工具
+
+def render_plan_steps(self, tracker):
+    """以 Rich Live 模式在终端底部原地刷新计划进度"""
+
+def clear_plan_live(self):
+    """停止 Live 显示，恢复终端正常滚动"""
+```
+
+计划面板使用 Rich `Live` 组件，当 Agent 执行复杂任务的各个步骤时，面板在终端底部原地刷新（不滚动输出）。任务完成后由 `clear_plan_live()` 收起面板。Live 面板使用 `transient=True` 模式，停止后不留痕迹。
+
+### 3.8 错误与提示信息
 
 ```python
 def render_error(self, message: str):
@@ -132,7 +170,7 @@ def render_info(self, message: str):
 
 错误信息和普通提示信息由不同颜色区分。
 
-### 3.7 记忆列表渲染
+### 3.9 记忆列表渲染
 
 ```python
 def render_memory_list(self, memories: list):
@@ -156,7 +194,7 @@ def render_memory_list(self, memories: list):
 暂无记忆
 ```
 
-### 3.8 帮助信息渲染
+### 3.10 帮助信息渲染
 
 `render_help()` 使用 Rich `Panel` 输出交互命令说明：
 
@@ -302,11 +340,19 @@ input_handler = InputHandler()
 交互主循环：
 
 ```python
+agent.set_callbacks(
+    on_tool_call=lambda name, args: renderer.render_tool_call(name, args),
+    on_plan_progress=lambda tracker: renderer.render_plan_steps(tracker),
+    on_tool_result=lambda name, success, output, error: renderer.render_tool_result(name, success, output, error),
+)
+
 while True:
     user_input = await input_handler.get_input()
     ...
+    renderer.clear_plan_live()
     renderer.render_user_input(user_input)
     response = await agent.run(user_input)
+    renderer.clear_plan_live()
     renderer.render_assistant(response)
 ```
 
@@ -356,4 +402,6 @@ UI 层无需修改代码即可切换配色。
 2. **工具参数未显示**：`render_tool_call()` 只显示工具名，未来可折叠显示参数。
 3. **帮助文本硬编码**：交互命令变化时需手动更新 `render_help()`。
 4. **主题字段未完全使用**：`system_color` 当前基本预留。
-5. **缺少进度动画**：长时间 LLM 调用或工具执行时没有 spinner/progress。
+5. ~~**缺少进度动画**~~ **已完成** — `render_plan_steps()` 使用 Rich Live 组件在终端底部原地刷新计划进度面板。
+6. ~~**工具结果不显示**~~ **已完成** — `render_tool_result()` 在工具执行后显示成功/失败状态和输出摘要。
+7. ~~**空内容不提示**~~ **已完成** — `render_assistant()` 检测空内容并显示 `(Agent 无输出)` 提示。

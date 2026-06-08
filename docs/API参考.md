@@ -11,6 +11,7 @@
   - [Conversation](#conversation)
   - [ContextManager](#contextmanager)
   - [TaskPlanner](#taskplanner)
+  - [PlanTracker](#plantracker)
 - [soul\_agent.memory — 记忆模块](#soul_agentmemory--记忆模块)
   - [MemoryManager](#memorymanager)
   - [ShortTermMemory](#shorttermmemory)
@@ -80,18 +81,22 @@ agent = Agent(
 
 ---
 
-#### `set_callbacks(on_tool_call=None, on_stream=None)`
+#### `set_callbacks(on_tool_call=None, on_stream=None, on_plan_progress=None, on_tool_result=None)`
 
-注册 UI 回调函数，用于在工具调用或流式输出时通知前端。
+注册 UI 回调函数，用于在工具调用、工具结果、计划进度或流式输出时通知前端。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `on_tool_call` | `Callable \| None` | 工具调用时触发的回调 |
+| `on_tool_call` | `Callable \| None` | 工具调用时触发，参数 `(tool_name, args_dict)` |
+| `on_tool_result` | `Callable \| None` | 工具执行后触发，参数 `(tool_name, success, output, error_or_None)` |
+| `on_plan_progress` | `Callable \| None` | 计划进度更新时触发，参数 `(plan_tracker)` |
 | `on_stream` | `Callable \| None` | 流式输出时触发的回调 |
 
 ```python
 agent.set_callbacks(
     on_tool_call=lambda name, args: print(f"调用工具: {name}"),
+    on_tool_result=lambda name, success, output, err: print(f"✅ {name}" if success else f"❌ {name}: {err}"),
+    on_plan_progress=lambda tracker: print(f"进度: {tracker.done_count}/{tracker.total_count}"),
     on_stream=lambda chunk: print(chunk, end=""),
 )
 ```
@@ -162,11 +167,11 @@ print(conv.conversation_id)  # 自动生成的 UUID 字符串
 
 ---
 
-#### `build_messages(user_input, system_prompt, memories=None) -> list[dict]`
+#### `build_messages(user_input, system_prompt, memories=None, plan_context="") -> list[dict]`
 
 构建完整的消息列表，供 LLM 调用。
 
-当提供 `memories` 时，会将记忆内容注入系统提示，格式为：
+当提供 `memories` 时，会将记忆内容注入系统提示；当提供 `plan_context` 时，会将执行计划注入系统提示。
 
 ```
 已知的用户信息：
@@ -179,6 +184,7 @@ print(conv.conversation_id)  # 自动生成的 UUID 字符串
 | `user_input` | `str` | 当前用户输入 |
 | `system_prompt` | `str` | 系统提示词 |
 | `memories` | `list[MemoryEntry] \| None` | 检索到的相关记忆条目 |
+| `plan_context` | `str` | 任务执行计划文本（由 `Agent._format_plan_context()` 格式化），默认空 |
 
 **返回值：** `list[dict]` — 格式为 `[{"role": "system", "content": "..."}, ..., {"role": "user", "content": "..."}]`。
 
@@ -187,10 +193,11 @@ messages = conv.build_messages(
     user_input="你好",
     system_prompt="你是一个有用的助手。",
     memories=retrieved_memories,
+    plan_context="## 执行计划\n任务: 分析代码结构\n\n1. 读取文件 [工具: read_file]\n",
 )
 # [
-#   {"role": "system", "content": "你是一个有用的助手。\n\n已知的用户信息：\n- [preference] 喜欢简洁的回答"},
-#   ... (历史消息) ...
+#   {"role": "system", "content": "你是一个有用的助手。\n\n已知的用户信息：\n- [preference] 喜欢简洁的回答\n\n## 执行计划\n..."},
+#   ... (历史消息，含工具调用) ...
 #   {"role": "user", "content": "你好"}
 # ]
 ```
@@ -341,6 +348,7 @@ planner = TaskPlanner(llm_client)
 ```python
 {
     "task": "部署应用到服务器",
+    "complexity": "complex",
     "steps": [
         {
             "id": 1,
@@ -364,6 +372,71 @@ plan = await planner.plan(
     available_tools=["search_files", "run_command", "read_file"],
 )
 ```
+
+---
+
+### PlanTracker
+
+```
+soul_agent.core.plan_tracker.PlanTracker
+```
+
+计划进度追踪器，将 `TaskPlanner` 生成的计划转化为可追踪状态，将 Agent 的工具调用自动匹配到计划步骤。
+
+#### `__init__(plan: dict)`
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `plan` | `dict` | TaskPlanner.plan() 返回的计划字典 |
+
+```python
+from soul_agent.core.plan_tracker import PlanTracker
+
+tracker = PlanTracker(plan)
+print(tracker.task)  # 任务描述
+```
+
+---
+
+#### `mark_tool_done(tool_name: str) -> int | None`
+
+将工具调用匹配到第一个 pending 步骤，标记为 done。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `tool_name` | `str` | 工具名称 |
+
+**返回值：** `int | None` — 匹配到的 step id，没有匹配到则返回 `None`。
+
+---
+
+**只读属性：**
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `task` | `str` | 任务描述 |
+| `complexity` | `str` | 复杂度（`simple` 或 `complex`） |
+| `steps` | `list[PlanStep]` | 步骤列表 |
+| `done_count` | `int` | 已完成步骤数 |
+| `total_count` | `int` | 总步骤数 |
+| `all_done` | `bool` | 全部步骤是否已完成 |
+| `has_tool_steps` | `bool` | 是否至少有一个需要工具的步骤 |
+
+### PlanStep
+
+```
+soul_agent.core.plan_tracker.PlanStep
+```
+
+计划步骤数据类。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | `int` | 步骤序号 |
+| `description` | `str` | 步骤描述 |
+| `tool` | `str \| None` | 需要的工具名（无则为 `None`） |
+| `depends_on` | `list[int]` | 依赖的前置步骤 ID |
+| `status` | `str` | 状态：`"pending"` 或 `"done"` |
 
 ---
 
@@ -1594,10 +1667,12 @@ soul_agent.config.settings
 
 #### AgentConfig
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `system_prompt` | `str` | 系统提示词 |
-| `max_iterations` | `int` | ReAct 循环最大迭代次数 |
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `max_iterations` | `int` | `30` | ReAct 循环最大迭代次数 |
+| `system_prompt_path` | `str \| None` | `None` | 自定义系统提示词文件路径 |
+| `planning_enabled` | `bool` | `True` | 是否启用自动任务规划 |
+| `planning_complexity_threshold` | `int` | `2` | 触发规划的复杂度阈值（0-10） |
 
 #### MemoryConfig
 
@@ -1787,6 +1862,50 @@ renderer.render_assistant("项目结构如下：\n```\nsrc/\n├── main.py\n
 
 ```python
 renderer.render_tool_call("read_file", {"path": "config.yaml"})
+```
+
+---
+
+#### `render_tool_result(tool_name, success, output, error=None)`
+
+渲染工具执行结果。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `tool_name` | `str` | 工具名称 |
+| `success` | `bool` | 是否执行成功 |
+| `output` | `str` | 输出内容（成功时截断 300 字符，失败时为空） |
+| `error` | `str \| None` | 错误信息，成功时为 `None` |
+
+```python
+renderer.render_tool_result("write_file", True, "已写入文件: output.txt")
+renderer.render_tool_result("read_file", False, "", "文件不存在: /bad/path")
+```
+
+---
+
+#### `render_plan_steps(tracker)`
+
+使用 Rich Live 组件在终端底部原位刷新计划执行进度面板。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `tracker` | `PlanTracker` | 计划进度追踪器实例 |
+
+```python
+renderer.render_plan_steps(plan_tracker)
+```
+
+**效果：** 在终端底部显示 `📋 执行计划` 面板，☑ 标记已完成步骤，☐ 标记待完成步骤，每步显示工具名。任务执行完成后由 `clear_plan_live()` 收起。
+
+---
+
+#### `clear_plan_live()`
+
+停止计划面板的 Live 显示，恢复终端正常滚动。在每轮对话开始前和 Agent 回复前调用。
+
+```python
+renderer.clear_plan_live()
 ```
 
 ---
@@ -2130,6 +2249,7 @@ async def main():
 
     agent.set_callbacks(
         on_tool_call=lambda name, args: print(f"🔧 {name}({args})"),
+        on_tool_result=lambda name, success, output, error: print(f"{'✅' if success else '❌'} {name}"),
     )
 
     reply = await agent.run("读取 README.md 文件")
