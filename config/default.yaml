@@ -9,6 +9,8 @@ llm:
 agent:
   max_iterations: 10
   system_prompt_path: null
+  planning_enabled: true
+  planning_complexity_threshold: 2
 
 memory:
   enabled: true

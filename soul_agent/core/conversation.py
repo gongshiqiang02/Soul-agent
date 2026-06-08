@@ -18,6 +18,7 @@ class Conversation:
         user_input: str,
         system_prompt: str,
         memories: list | None = None,
+        plan_context: str = "",
     ) -> list[dict]:
         """构建发送给LLM的完整消息列表"""
         messages = []
@@ -32,6 +33,7 @@ class Conversation:
 
         formatted_prompt = system_prompt.format(
             memory_context=memory_context or "暂无历史记忆",
+            plan_context=plan_context or "",
             tool_descriptions="{tool_descriptions}",
         )
         messages.append({"role": "system", "content": formatted_prompt})

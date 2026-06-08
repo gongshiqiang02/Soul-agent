@@ -23,6 +23,8 @@ class LLMConfig(BaseModel):
 class AgentConfig(BaseModel):
     max_iterations: int = 10
     system_prompt_path: str | None = None
+    planning_enabled: bool = True
+    planning_complexity_threshold: int = 2
 
 
 class MemoryConfig(BaseModel):

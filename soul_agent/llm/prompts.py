@@ -16,6 +16,7 @@ SYSTEM_PROMPT = """你是 Soul-agent，一个运行在终端中的智能助手�
 ## 当前上下文
 {memory_context}
 
+{plan_context}
 ## 可用工具
 {tool_descriptions}
 """

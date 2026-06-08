@@ -12,6 +12,17 @@ from soul_agent.utils.logger import logger
 class Agent:
     """Agent主循环，协调各模块完成用户任务"""
 
+    # 复杂度指标词（启发式判断任务是否需要规划）
+    _COMPLEXITY_INDICATORS = [
+        "然后", "之后", "接着", "首先", "最后", "再",
+        "并且", "同时", "还要", "另外", "以及",
+        "分析", "查找", "搜索", "创建", "部署", "安装",
+        "统计", "计算", "比较", "修改", "改写", "重构",
+        "总结", "提取", "生成", "转换", "编译", "测试",
+        "读取", "写入", "文件", "目录", "命令", "执行",
+        "运行", "下载", "请求", "网页", "配置",
+    ]
+
     def __init__(self, config, llm_client, memory_manager, tool_registry, tool_executor):
         self.config = config
         self.llm = llm_client
@@ -35,6 +46,23 @@ class Agent:
         # 0. 确保会话已持久化
         await self._ensure_conversation_persisted()
 
+        # 0.5. 自动判断是否需要任务规划
+        plan_context = ""
+        if self.config.agent.planning_enabled:
+            complexity = self._estimate_complexity(user_input)
+            threshold = self.config.agent.planning_complexity_threshold
+            if complexity >= threshold:
+                try:
+                    plan = await self.planner.plan(user_input, self.tools.names)
+                    plan_context = self._format_plan_context(plan)
+                    if plan_context:
+                        logger.debug(
+                            "任务规划已生成: complexity=%d, steps=%d",
+                            complexity, len(plan.get("steps", []))
+                        )
+                except Exception as e:
+                    logger.warning("任务规划失败，跳过: %s", e)
+
         # 1. 检索相关记忆
         relevant_memories = []
         if self.memory:
@@ -53,6 +81,7 @@ class Agent:
             user_input=user_input,
             system_prompt=system_prompt,
             memories=relevant_memories,
+            plan_context=plan_context,
         )
 
         # 4. Agent循环（ReAct）
@@ -107,6 +136,61 @@ class Agent:
         self.conversation.add_turn(user_input, final_content)
 
         return final_content
+
+    def _estimate_complexity(self, user_input: str) -> int:
+        """快速估算任务复杂度（0-10）。零 LLM 开销，纯启发式。"""
+        text = user_input.lower()
+        score = 0
+
+        # 1. 长度因子
+        length = len(text)
+        if length > 80:
+            score += 3
+        elif length > 40:
+            score += 2
+        elif length > 15:
+            score += 1
+
+        # 2. 复杂度指标词密度
+        indicator_count = sum(1 for ind in self._COMPLEXITY_INDICATORS if ind in text)
+        score += min(indicator_count, 5)
+
+        # 3. 多句 / 多段落
+        if "。" in text or "\n" in text:
+            score += 2
+        elif "；" in text or "，" in text:
+            score += 1
+
+        return min(score, 10)
+
+    def _format_plan_context(self, plan: dict) -> str:
+        """将规划结果格式化为注入 system prompt 的文本。
+        简单任务（无工具单步）返回空字符串。
+        """
+        steps = plan.get("steps", [])
+        complexity = plan.get("complexity", "simple")
+        has_tools = any(s.get("tool") for s in steps)
+
+        # 不值得注入计划的情况
+        if complexity == "simple" and not has_tools:
+            return ""
+        if len(steps) <= 1 and not has_tools:
+            return ""
+
+        lines = ["## 执行计划"]
+        lines.append(f"任务: {plan.get('task', '未指定')}")
+        lines.append("")
+        for step in steps:
+            step_id = step.get("id", "?")
+            desc = step.get("description", "")
+            tool = step.get("tool")
+            deps = step.get("depends_on", [])
+            tool_str = f" [工具: {tool}]" if tool else ""
+            dep_str = f" (依赖步骤: {deps})" if deps else ""
+            lines.append(f"  {step_id}. {desc}{tool_str}{dep_str}")
+        lines.append("")
+        lines.append("请按计划步骤执行，但可根据实际情况灵活调整。")
+        return "\n".join(lines)
 
     def reset(self):
         """重置对话 — 创建新会话"""

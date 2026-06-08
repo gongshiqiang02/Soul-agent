@@ -1,5 +1,6 @@
 """Agent核心测试"""
 
+import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -96,6 +97,7 @@ class TestAgent:
         config = MagicMock()
         config.llm.max_tokens = 4096
         config.agent.max_iterations = 3
+        config.agent.planning_enabled = False  # disable planner for basic tests
         return config
 
     @pytest.fixture
@@ -162,3 +164,186 @@ class TestAgent:
         await agent.run("你好")
         agent.reset()
         assert len(agent.conversation.messages) == 0
+
+
+def _make_minimal_agent():
+    """Create a minimal Agent for unit tests (no async deps)."""
+    config = MagicMock()
+    config.llm.max_tokens = 4096
+    config.agent.max_iterations = 3
+    config.agent.planning_enabled = True
+    config.agent.planning_complexity_threshold = 2
+    llm = AsyncMock()
+    return Agent(config, llm, None, MagicMock(), AsyncMock())
+
+
+class TestComplexityEstimation:
+    """Test heuristic complexity scoring."""
+
+    def test_simple_greeting_is_low_complexity(self):
+        agent = _make_minimal_agent()
+        score = agent._estimate_complexity("你好")
+        assert score < 2
+
+    def test_simple_ack_is_low_complexity(self):
+        agent = _make_minimal_agent()
+        score = agent._estimate_complexity("好的")
+        assert score < 2
+
+    def test_short_question_is_low_complexity(self):
+        agent = _make_minimal_agent()
+        score = agent._estimate_complexity("今天天气怎么样")
+        assert score < 2
+
+    def test_tool_mention_raises_complexity(self):
+        agent = _make_minimal_agent()
+        score = agent._estimate_complexity("帮我读取一下 config.yaml 文件")
+        assert score >= 2  # includes "读取" and "文件"
+
+    def test_multi_step_is_high_complexity(self):
+        agent = _make_minimal_agent()
+        score = agent._estimate_complexity(
+            "查找所有 Python 文件，然后统计每个文件的行数，最后把结果写入 report.txt"
+        )
+        assert score >= 3
+
+    def test_very_long_input_is_high_complexity(self):
+        agent = _make_minimal_agent()
+        long_msg = "请帮我详细分析一下这个项目的架构" + "，并给出改进建议" * 20
+        score = agent._estimate_complexity(long_msg)
+        assert score >= 3
+
+    def test_threshold_config_is_respected(self):
+        agent = _make_minimal_agent()
+        agent.config.agent.planning_complexity_threshold = 5
+        score = agent._estimate_complexity("读取 config.yaml")
+        assert score < 5
+
+
+class TestPlanContextFormatting:
+    """Test plan-to-context-text formatting."""
+
+    def test_simple_plan_no_tool_returns_empty(self):
+        agent = _make_minimal_agent()
+        plan = {
+            "task": "打招呼", "complexity": "simple",
+            "steps": [{"id": 1, "description": "回应", "tool": None, "depends_on": []}],
+        }
+        assert agent._format_plan_context(plan) == ""
+
+    def test_single_step_with_tool_returns_context(self):
+        agent = _make_minimal_agent()
+        plan = {
+            "task": "读取配置", "complexity": "simple",
+            "steps": [{"id": 1, "description": "读取", "tool": "read_file", "depends_on": []}],
+        }
+        result = agent._format_plan_context(plan)
+        assert "read_file" in result
+        assert "执行计划" in result
+
+    def test_multi_step_plan_returns_full_context(self):
+        agent = _make_minimal_agent()
+        plan = {
+            "task": "代码统计", "complexity": "complex",
+            "steps": [
+                {"id": 1, "description": "查找文件", "tool": "search_files", "depends_on": []},
+                {"id": 2, "description": "统计行数", "tool": "run_command", "depends_on": [1]},
+                {"id": 3, "description": "写结果", "tool": "write_file", "depends_on": [2]},
+            ],
+        }
+        result = agent._format_plan_context(plan)
+        assert "search_files" in result
+        assert "run_command" in result
+        assert "write_file" in result
+        assert "依赖步骤" in result
+
+    def test_empty_steps_returns_empty(self):
+        agent = _make_minimal_agent()
+        plan = {"task": "空", "complexity": "simple", "steps": []}
+        assert agent._format_plan_context(plan) == ""
+
+
+@pytest.mark.asyncio
+class TestAgentWithPlanning:
+    """Integration tests for Agent with planning enabled."""
+
+    @pytest.fixture
+    def mock_config(self):
+        config = MagicMock()
+        config.llm.max_tokens = 4096
+        config.agent.max_iterations = 3
+        config.agent.planning_enabled = True
+        config.agent.planning_complexity_threshold = 2
+        return config
+
+    @pytest.fixture
+    def mock_llm(self):
+        llm = AsyncMock()
+        response = MagicMock()
+        response.content = "Hello!"
+        response.has_tool_calls = False
+        response.tool_calls = []
+        llm.chat.return_value = response
+        return llm
+
+    @pytest.fixture
+    def mock_memory(self):
+        return AsyncMock()
+
+    @pytest.fixture
+    def mock_registry(self):
+        registry = MagicMock()
+        registry.schemas = []
+        registry.get_descriptions.return_value = ""
+        registry.names = ["read_file", "write_file", "run_command"]
+        return registry
+
+    @pytest.fixture
+    def mock_executor(self):
+        return AsyncMock()
+
+    async def test_simple_task_skips_planning(
+        self, mock_config, mock_llm, mock_memory, mock_registry, mock_executor
+    ):
+        """Simple greeting: no planner call."""
+        agent = Agent(mock_config, mock_llm, mock_memory, mock_registry, mock_executor)
+        result = await agent.run("你好")
+        assert result == "Hello!"
+        assert mock_llm.chat.call_count == 1
+
+    async def test_complex_task_triggers_planning(
+        self, mock_config, mock_llm, mock_memory, mock_registry, mock_executor
+    ):
+        """Complex task: planner + ReAct both called."""
+        plan_resp = MagicMock()
+        plan_resp.content = json.dumps({
+            "task": "分析并写入", "complexity": "complex",
+            "steps": [
+                {"id": 1, "description": "读文件", "tool": "read_file", "depends_on": []},
+                {"id": 2, "description": "写结果", "tool": "write_file", "depends_on": [1]},
+            ],
+        })
+        plan_resp.has_tool_calls = False
+        plan_resp.tool_calls = []
+
+        text_resp = MagicMock()
+        text_resp.content = "分析完成"
+        text_resp.has_tool_calls = False
+        text_resp.tool_calls = []
+
+        mock_llm.chat.side_effect = [plan_resp, text_resp]
+
+        agent = Agent(mock_config, mock_llm, mock_memory, mock_registry, mock_executor)
+        result = await agent.run("读取 README.md，分析内容，将结果写入 analysis.txt")
+        assert result == "分析完成"
+        assert mock_llm.chat.call_count >= 2
+
+    async def test_planning_disabled_by_config(
+        self, mock_config, mock_llm, mock_memory, mock_registry, mock_executor
+    ):
+        """With planning disabled, complex task still only calls ReAct once."""
+        mock_config.agent.planning_enabled = False
+        agent = Agent(mock_config, mock_llm, mock_memory, mock_registry, mock_executor)
+        result = await agent.run("读取 README.md 然后写入结果到 analysis.txt")
+        assert result == "Hello!"
+        assert mock_llm.chat.call_count == 1

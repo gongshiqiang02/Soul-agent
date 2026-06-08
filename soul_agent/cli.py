@@ -50,4 +50,6 @@ def config():
     console.print(f"  Base URL: {cfg.llm.base_url or '默认'}")
     console.print(f"  记忆系统: {'启用' if cfg.memory.enabled else '禁用'}")
     console.print(f"  最大迭代: {cfg.agent.max_iterations}")
+    console.print(f"  任务规划: {'启用' if cfg.agent.planning_enabled else '禁用'} "
+                  f"(阈值 {cfg.agent.planning_complexity_threshold})")
     console.print(f"  已启用工具: {', '.join(cfg.tools.enabled)}")

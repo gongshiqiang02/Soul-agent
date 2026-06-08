@@ -12,6 +12,8 @@ DEFAULT_CONFIG = {
     "agent": {
         "max_iterations": 10,
         "system_prompt_path": None,
+        "planning_enabled": True,
+        "planning_complexity_threshold": 2,
     },
     "memory": {
         "enabled": True,
