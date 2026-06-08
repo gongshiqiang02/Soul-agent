@@ -34,12 +34,13 @@ async def create_agent(config=None):
     # Agent
     agent = Agent(config, llm_client, memory_manager, tool_registry, tool_executor)
 
-    # 预创建首个会话（让 /history 可立即看到）
+    # 预创建首个会话（让 /history 可立即看到），同时注入持久化回调
     if memory_manager:
         await memory_manager.create_conversation_with_id(
             agent.conversation.conversation_id
         )
         agent._conversation_started = True
+        agent.conversation.set_persist_callback(agent._persist_message)
 
     return agent
 
