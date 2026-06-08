@@ -38,6 +38,9 @@ class Renderer:
     def render_assistant(self, text: str):
         """渲染助手回复（支持Markdown）"""
         self.console.print(f"\n[{self.theme['assistant_color']}]🤖 Soul-agent:[/]")
+        if not text or not text.strip():
+            self.console.print("  [dim](Agent 无输出)[/]")
+            return
         try:
             md = Markdown(text)
             self.console.print(md)
@@ -50,6 +53,20 @@ class Renderer:
             f"  [{self.theme['tool_color']}]🔧 调用工具: {tool_name}[/]",
             style="dim",
         )
+
+    def render_tool_result(self, tool_name: str, success: bool, output: str, error: str | None = None):
+        """渲染工具执行结果"""
+        display = output[:300] + ("..." if len(output) > 300 else "")
+        if success:
+            self.console.print(
+                f"  [{self.theme['tool_color']}]✅ {tool_name}[/] [dim]{display}[/]",
+                style="dim",
+            )
+        else:
+            self.console.print(
+                f"  [{self.theme['error_color']}]❌ {tool_name}: {error or display}[/]",
+                style="dim",
+            )
 
     def render_error(self, message: str):
         """渲染错误信息"""

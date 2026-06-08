@@ -38,12 +38,14 @@ class Agent:
         self._on_stream = None  # callback for streaming
         self._plan_tracker = None  # 计划进度追踪器
         self._on_plan_progress = None  # callback for plan progress
+        self._on_tool_result = None  # callback for tool results
 
-    def set_callbacks(self, on_tool_call=None, on_stream=None, on_plan_progress=None):
+    def set_callbacks(self, on_tool_call=None, on_stream=None, on_plan_progress=None, on_tool_result=None):
         """设置UI回调"""
         self._on_tool_call = on_tool_call
         self._on_stream = on_stream
         self._on_plan_progress = on_plan_progress
+        self._on_tool_result = on_tool_result
 
     async def run(self, user_input: str) -> str:
         """处理一次用户输入，返回最终响应"""
@@ -93,6 +95,10 @@ class Agent:
             plan_context=plan_context,
         )
 
+        # 3.5. 将用户消息持久化到对话历史（必须在工具消息之前）
+        self.conversation.messages.append({"role": "user", "content": user_input})
+        self.conversation._schedule_persist("user", user_input)
+
         # 4. Agent循环（ReAct）
         max_iter = self.config.agent.max_iterations
         final_content = ""
@@ -128,6 +134,17 @@ class Agent:
                 # 执行工具
                 results = await self.executor.execute_batch(response.tool_calls)
 
+                # 通知UI工具执行结果
+                if self._on_tool_result:
+                    for tc, result in zip(response.tool_calls, results):
+                        name = tc["name"]
+                        content = result.get("content", "")
+                        is_error = content.startswith("错误:")
+                        self._on_tool_result(
+                            name, not is_error, content,
+                            content[3:] if is_error else None,
+                        )
+
                 # 更新计划进度
                 if self._plan_tracker:
                     for tc in response.tool_calls:
@@ -136,11 +153,22 @@ class Agent:
                         self._on_plan_progress(self._plan_tracker)
 
                 messages.extend(results)
+
+                # 持久化工具交互消息，确保"继续"时不丢失上下文
+                self.conversation.add_message(assistant_msg)
+                for r in results:
+                    self.conversation.add_message(r)
             else:
                 final_content = response.content
                 break
         else:
-            final_content = response.content if response else "达到最大迭代次数，任务未完成。"
+            if response and response.content:
+                final_content = response.content
+            else:
+                final_content = (
+                    f"已达到最大工具调用次数（{max_iter}）。"
+                    "任务尚未完成，可以输入 '继续' 来恢复执行。"
+                )
 
         # 5. 更新记忆
         if self.memory:
@@ -149,8 +177,13 @@ class Agent:
             except Exception as e:
                 logger.warning(f"记忆更新失败: {e}")
 
-        # 6. 更新对话历史
-        self.conversation.add_turn(user_input, final_content)
+        # 6. 添加助手最终回复到对话历史，并裁剪过长的历史
+        self.conversation.messages.append({"role": "assistant", "content": final_content})
+        self.conversation._schedule_persist("assistant", final_content)
+        # 保留最近 20 轮对话（含工具消息），防止上下文过长
+        max_msgs = self.config.agent.max_iterations * 2 + 40  # 留足余量
+        if len(self.conversation.messages) > max_msgs:
+            self.conversation.messages = self.conversation.messages[-max_msgs:]
 
         return final_content
 

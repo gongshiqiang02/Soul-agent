@@ -10,7 +10,7 @@ DEFAULT_CONFIG = {
         "max_tokens": 4096,
     },
     "agent": {
-        "max_iterations": 10,
+        "max_iterations": 30,
         "system_prompt_path": None,
         "planning_enabled": True,
         "planning_complexity_threshold": 2,

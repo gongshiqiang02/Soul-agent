@@ -64,6 +64,7 @@ async def run_chat():
     agent.set_callbacks(
         on_tool_call=lambda name, args: renderer.render_tool_call(name, args),
         on_plan_progress=lambda tracker: renderer.render_plan_steps(tracker),
+        on_tool_result=lambda name, success, output, error: renderer.render_tool_result(name, success, output, error),
     )
 
     while True:
