@@ -1,6 +1,7 @@
 """Rich终端渲染器"""
 
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
@@ -15,6 +16,7 @@ class Renderer:
     def __init__(self, theme_name: str = "monokai"):
         self.console = Console()
         self.theme = get_theme(theme_name)
+        self._plan_live: Live | None = None  # 固定在底部的计划面板
 
     def render_welcome(self):
         """渲染欢迎界面"""
@@ -98,21 +100,37 @@ class Renderer:
 
         self.console.print(table)
 
-    def render_plan_steps(self, tracker):
-        """渲染计划步骤进度面板（☐ pending / ☑ done）"""
-        if not tracker.steps:
-            return
-
+    def _build_plan_panel(self, tracker) -> Panel:
+        """构建计划面板（不输出）"""
         lines = [f"任务: {tracker.task}  ({tracker.done_count}/{tracker.total_count})"]
         lines.append("")
         for step in tracker.steps:
             icon = "☑" if step.status == "done" else "☐"
             tool_str = f" [dim]{step.tool}[/]" if step.tool else ""
             lines.append(f"  {icon} {step.id}. {step.description}{tool_str}")
+        return Panel("\n".join(lines), title="📋 执行计划", border_style="bright_cyan")
 
-        self.console.print(
-            Panel("\n".join(lines), title="📋 执行计划", border_style="bright_cyan")
-        )
+    def render_plan_steps(self, tracker):
+        """渲染计划步骤进度面板，固定在终端底部原地刷新"""
+        if not tracker.steps:
+            return
+
+        panel = self._build_plan_panel(tracker)
+
+        if self._plan_live is None:
+            self._plan_live = Live(
+                panel, console=self.console,
+                auto_refresh=True, transient=True, screen=False,
+            )
+            self._plan_live.start()
+        else:
+            self._plan_live.update(panel)
+
+    def clear_plan_live(self):
+        """停止计划面板的 Live 显示，恢复终端正常滚动"""
+        if self._plan_live:
+            self._plan_live.stop()
+            self._plan_live = None
 
     def render_help(self):
         """渲染帮助信息"""

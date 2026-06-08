@@ -75,6 +75,9 @@ async def run_chat():
         if not user_input:
             continue
 
+        # 清除上一轮的 Live 面板
+        renderer.clear_plan_live()
+
         # 系统命令处理
         if user_input.startswith("/"):
             cmd = user_input.lower().strip()
@@ -125,6 +128,7 @@ async def run_chat():
 
         try:
             response = await agent.run(user_input)
+            renderer.clear_plan_live()  # 收起 Live 面板后显示回复
             renderer.render_assistant(response)
         except Exception as e:
             renderer.render_error(f"处理失败: {e}")
