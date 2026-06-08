@@ -5,6 +5,7 @@ import uuid
 from soul_agent.core.conversation import Conversation
 from soul_agent.core.context import ContextManager
 from soul_agent.core.planner import TaskPlanner
+from soul_agent.core.plan_tracker import PlanTracker
 from soul_agent.llm.prompts import SYSTEM_PROMPT
 from soul_agent.utils.logger import logger
 
@@ -35,11 +36,14 @@ class Agent:
         self.planner = TaskPlanner(llm_client)
         self._on_tool_call = None  # callback for UI
         self._on_stream = None  # callback for streaming
+        self._plan_tracker = None  # 计划进度追踪器
+        self._on_plan_progress = None  # callback for plan progress
 
-    def set_callbacks(self, on_tool_call=None, on_stream=None):
+    def set_callbacks(self, on_tool_call=None, on_stream=None, on_plan_progress=None):
         """设置UI回调"""
         self._on_tool_call = on_tool_call
         self._on_stream = on_stream
+        self._on_plan_progress = on_plan_progress
 
     async def run(self, user_input: str) -> str:
         """处理一次用户输入，返回最终响应"""
@@ -55,6 +59,11 @@ class Agent:
                 try:
                     plan = await self.planner.plan(user_input, self.tools.names)
                     plan_context = self._format_plan_context(plan)
+                    # 创建进度追踪器（仅当计划有工具步骤时）
+                    if plan_context:
+                        self._plan_tracker = PlanTracker(plan)
+                        if self._on_plan_progress:
+                            self._on_plan_progress(self._plan_tracker)
                     if plan_context:
                         logger.debug(
                             "任务规划已生成: complexity=%d, steps=%d",
@@ -118,6 +127,14 @@ class Agent:
 
                 # 执行工具
                 results = await self.executor.execute_batch(response.tool_calls)
+
+                # 更新计划进度
+                if self._plan_tracker:
+                    for tc in response.tool_calls:
+                        self._plan_tracker.mark_tool_done(tc["name"])
+                    if self._on_plan_progress:
+                        self._on_plan_progress(self._plan_tracker)
+
                 messages.extend(results)
             else:
                 final_content = response.content
@@ -197,6 +214,7 @@ class Agent:
         self.conversation.clear()
         self.conversation.conversation_id = str(uuid.uuid4())
         self._conversation_started = False
+        self._plan_tracker = None
 
     async def rename_conversation(self, title: str):
         """重命名当前会话"""

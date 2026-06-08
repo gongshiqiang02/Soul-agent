@@ -98,6 +98,22 @@ class Renderer:
 
         self.console.print(table)
 
+    def render_plan_steps(self, tracker):
+        """渲染计划步骤进度面板（☐ pending / ☑ done）"""
+        if not tracker.steps:
+            return
+
+        lines = [f"任务: {tracker.task}  ({tracker.done_count}/{tracker.total_count})"]
+        lines.append("")
+        for step in tracker.steps:
+            icon = "☑" if step.status == "done" else "☐"
+            tool_str = f" [dim]{step.tool}[/]" if step.tool else ""
+            lines.append(f"  {icon} {step.id}. {step.description}{tool_str}")
+
+        self.console.print(
+            Panel("\n".join(lines), title="📋 执行计划", border_style="bright_cyan")
+        )
+
     def render_help(self):
         """渲染帮助信息"""
         help_text = """

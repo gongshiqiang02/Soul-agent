@@ -347,3 +347,105 @@ class TestAgentWithPlanning:
         result = await agent.run("读取 README.md 然后写入结果到 analysis.txt")
         assert result == "Hello!"
         assert mock_llm.chat.call_count == 1
+
+    async def test_plan_tracker_created_for_complex_task(
+        self, mock_config, mock_llm, mock_memory, mock_registry, mock_executor
+    ):
+        """复杂任务：应创建 PlanTracker 并触发 on_plan_progress 回调"""
+        plan_resp = MagicMock()
+        plan_resp.content = json.dumps({
+            "task": "多步任务", "complexity": "complex",
+            "steps": [
+                {"id": 1, "description": "搜索", "tool": "search_files", "depends_on": []},
+                {"id": 2, "description": "统计", "tool": "run_command", "depends_on": [1]},
+            ],
+        })
+        plan_resp.has_tool_calls = False
+        plan_resp.tool_calls = []
+
+        text_resp = MagicMock()
+        text_resp.content = "完成"
+        text_resp.has_tool_calls = False
+        text_resp.tool_calls = []
+
+        mock_llm.chat.side_effect = [plan_resp, text_resp]
+
+        agent = Agent(mock_config, mock_llm, mock_memory, mock_registry, mock_executor)
+
+        progress_calls = []
+        agent.set_callbacks(on_plan_progress=lambda t: progress_calls.append(t))
+
+        await agent.run("搜索所有 Python 文件然后统计行数")
+        assert len(progress_calls) >= 1  # 至少初始渲染一次
+        assert progress_calls[0].task == "多步任务"
+
+    async def test_tool_call_updates_plan_tracker(
+        self, mock_config, mock_llm, mock_memory, mock_registry, mock_executor
+    ):
+        """工具调用应更新 PlanTracker 步骤状态"""
+        plan_resp = MagicMock()
+        plan_resp.content = json.dumps({
+            "task": "读取并写入", "complexity": "complex",
+            "steps": [
+                {"id": 1, "description": "读取", "tool": "read_file", "depends_on": []},
+                {"id": 2, "description": "写入", "tool": "write_file", "depends_on": [1]},
+            ],
+        })
+        plan_resp.has_tool_calls = False
+        plan_resp.tool_calls = []
+
+        tool_resp = MagicMock()
+        tool_resp.content = ""
+        tool_resp.has_tool_calls = True
+        tool_resp.tool_calls = [
+            {"id": "c1", "name": "read_file", "arguments": {"path": "test.txt"}}
+        ]
+
+        text_resp = MagicMock()
+        text_resp.content = "完成"
+        text_resp.has_tool_calls = False
+        text_resp.tool_calls = []
+
+        mock_llm.chat.side_effect = [plan_resp, tool_resp, text_resp]
+        mock_executor.execute_batch.return_value = [
+            {"role": "tool", "tool_call_id": "c1", "content": "file content"}
+        ]
+
+        agent = Agent(mock_config, mock_llm, mock_memory, mock_registry, mock_executor)
+
+        progress_calls = []
+        agent.set_callbacks(on_plan_progress=lambda t: progress_calls.append(t))
+
+        await agent.run("读取 test.txt 然后写入 result.txt")
+
+        # 最后回调应显示步骤 1 已完成
+        assert len(progress_calls) >= 2  # 初始化 + 工具调用后更新
+        last_tracker = progress_calls[-1]
+        assert last_tracker.steps[0].status == "done"
+
+    async def test_plan_tracker_cleared_on_reset(
+        self, mock_config, mock_llm, mock_memory, mock_registry, mock_executor
+    ):
+        """reset() 应清除 PlanTracker"""
+        plan_resp = MagicMock()
+        plan_resp.content = json.dumps({
+            "task": "搜索", "complexity": "complex",
+            "steps": [{"id": 1, "description": "搜索", "tool": "search_files", "depends_on": []}],
+        })
+        plan_resp.has_tool_calls = False
+        plan_resp.tool_calls = []
+
+        text_resp = MagicMock()
+        text_resp.content = "完成"
+        text_resp.has_tool_calls = False
+        text_resp.tool_calls = []
+
+        mock_llm.chat.side_effect = [plan_resp, text_resp]
+
+        agent = Agent(mock_config, mock_llm, mock_memory, mock_registry, mock_executor)
+
+        await agent.run("搜索所有 .py 文件")
+        assert agent._plan_tracker is not None
+
+        agent.reset()
+        assert agent._plan_tracker is None
