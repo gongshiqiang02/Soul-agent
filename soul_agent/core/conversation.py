@@ -1,5 +1,8 @@
 """对话管理"""
 
+import json
+import uuid
+import asyncio
 from dataclasses import dataclass, field
 
 
@@ -8,7 +11,8 @@ class Conversation:
 
     def __init__(self):
         self.messages: list[dict] = []
-        self.conversation_id: str = ""
+        self.conversation_id: str = str(uuid.uuid4())
+        self._on_persist_message = None  # async callable(cid, role, content, tool_calls)
 
     def build_messages(
         self,
@@ -46,6 +50,10 @@ class Conversation:
         self.messages.append({"role": "user", "content": user_input})
         self.messages.append({"role": "assistant", "content": assistant_reply})
 
+        # 持久化本轮消息
+        self._schedule_persist("user", user_input)
+        self._schedule_persist("assistant", assistant_reply)
+
         # 保留最近的对话（防止上下文过长）
         max_turns = 20
         max_messages = max_turns * 2
@@ -55,6 +63,28 @@ class Conversation:
     def add_message(self, message: dict):
         """添加任意消息（如工具调用结果）"""
         self.messages.append(message)
+        # 持久化工具消息
+        tc_str = json.dumps(message.get("tool_calls")) if message.get("tool_calls") else None
+        self._schedule_persist(
+            message.get("role", "tool"), message.get("content", ""), tc_str
+        )
 
     def clear(self):
         self.messages.clear()
+
+    def set_persist_callback(self, callback):
+        """设置消息持久化回调。callback 签名为 async def(cid, role, content, tool_calls)"""
+        self._on_persist_message = callback
+
+    def _schedule_persist(self, role: str, content: str, tool_calls: str | None = None):
+        """调度异步持久化任务（fire-and-forget）"""
+        if not self._on_persist_message:
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(
+                    self._on_persist_message(self.conversation_id, role, content, tool_calls)
+                )
+        except RuntimeError:
+            pass

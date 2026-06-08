@@ -34,6 +34,13 @@ async def create_agent(config=None):
     # Agent
     agent = Agent(config, llm_client, memory_manager, tool_registry, tool_executor)
 
+    # 预创建首个会话（让 /history 可立即看到）
+    if memory_manager:
+        await memory_manager.create_conversation_with_id(
+            agent.conversation.conversation_id
+        )
+        agent._conversation_started = True
+
     return agent
 
 
@@ -85,6 +92,22 @@ async def run_chat():
                     renderer.render_memory_list(memories)
                 else:
                     renderer.render_info("记忆系统未启用")
+                continue
+            elif cmd.startswith("/history"):
+                if agent.memory:
+                    conversations = await agent.memory.list_conversations()
+                    renderer.render_conversation_list(conversations)
+                else:
+                    renderer.render_info("记忆系统未启用，无法查看历史会话")
+                continue
+            elif cmd.startswith("/name"):
+                parts = user_input.strip().split(maxsplit=1)
+                if len(parts) < 2:
+                    renderer.render_error("用法: /name <会话名称>")
+                else:
+                    new_name = parts[1].strip()
+                    await agent.rename_conversation(new_name)
+                    renderer.render_info(f"✅ 会话已重命名为: {new_name}")
                 continue
             elif cmd == "/config":
                 from rich.pretty import pretty_repr

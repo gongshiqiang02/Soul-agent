@@ -1,6 +1,7 @@
 """Agent主循环 - ReAct模式"""
 
 import json
+import uuid
 from soul_agent.core.conversation import Conversation
 from soul_agent.core.context import ContextManager
 from soul_agent.core.planner import TaskPlanner
@@ -18,6 +19,7 @@ class Agent:
         self.tools = tool_registry
         self.executor = tool_executor
         self.conversation = Conversation()
+        self._conversation_started = False  # 标记会话是否已入库
         self.context_mgr = ContextManager(max_tokens=config.llm.max_tokens)
         self.planner = TaskPlanner(llm_client)
         self._on_tool_call = None  # callback for UI
@@ -30,6 +32,9 @@ class Agent:
 
     async def run(self, user_input: str) -> str:
         """处理一次用户输入，返回最终响应"""
+        # 0. 确保会话已持久化
+        await self._ensure_conversation_persisted()
+
         # 1. 检索相关记忆
         relevant_memories = []
         if self.memory:
@@ -104,5 +109,34 @@ class Agent:
         return final_content
 
     def reset(self):
-        """重置对话"""
+        """重置对话 — 创建新会话"""
         self.conversation.clear()
+        self.conversation.conversation_id = str(uuid.uuid4())
+        self._conversation_started = False
+
+    async def rename_conversation(self, title: str):
+        """重命名当前会话"""
+        if self.memory:
+            await self._ensure_conversation_persisted()
+            await self.memory.update_conversation_title(
+                self.conversation.conversation_id, title
+            )
+
+    async def _ensure_conversation_persisted(self):
+        """确保当前会话已在数据库中创建"""
+        if self._conversation_started:
+            return
+        if self.memory:
+            await self.memory.create_conversation_with_id(
+                self.conversation.conversation_id
+            )
+            # 注入持久化回调
+            self.conversation.set_persist_callback(self._persist_message)
+        self._conversation_started = True
+
+    async def _persist_message(self, conversation_id, role, content, tool_calls):
+        """持久化单条消息的回调"""
+        if self.memory:
+            await self.memory.long_term.save_message(
+                conversation_id, role, content, tool_calls
+            )

@@ -77,13 +77,36 @@ class Renderer:
 
         self.console.print(table)
 
+    def render_conversation_list(self, conversations: list):
+        """渲染历史会话列表"""
+        if not conversations:
+            self.console.print("[dim]暂无历史会话[/]")
+            return
+
+        table = Table(title="📜 历史会话", show_header=True, header_style="bold bright_cyan")
+        table.add_column("#", style="dim", width=5)
+        table.add_column("标题", style="white", max_width=40)
+        table.add_column("消息数", style="green", width=8, justify="right")
+        table.add_column("更新时间", style="yellow", width=20)
+
+        for i, conv in enumerate(conversations, 1):
+            updated = conv.updated_at.strftime("%m-%d %H:%M") if hasattr(conv, "updated_at") else "?"
+            title = conv.title or "未命名"
+            if len(title) > 40:
+                title = title[:37] + "..."
+            table.add_row(str(i), title, str(conv.message_count), updated)
+
+        self.console.print(table)
+
     def render_help(self):
         """渲染帮助信息"""
         help_text = """
 [bold]可用命令:[/]
   [yellow]/help[/]     显示帮助信息
   [yellow]/memory[/]   查看记忆列表
-  [yellow]/clear[/]    清除对话历史
+  [yellow]/history[/]  查看历史会话
+  [yellow]/name[/]     为当前会话命名，如 /name 技术讨论
+  [yellow]/clear[/]    清除对话历史（新会话）
   [yellow]/config[/]   显示当前配置
   [yellow]/quit[/]     退出程序
 

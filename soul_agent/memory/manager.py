@@ -115,3 +115,34 @@ class MemoryManager:
         """Summarize the current short-term conversation."""
         messages = self.short_term.get_messages()
         return await self.summarizer.summarize(messages)
+
+    # ── Conversation persistence bridge ─────────────────────────────
+
+    async def create_conversation(self, title: str = "") -> str:
+        """Create a new persisted conversation."""
+        return await self.long_term.create_conversation(title)
+
+    async def create_conversation_with_id(self, conversation_id: str,
+                                          title: str = ""):
+        """Create a conversation with a pre-generated ID."""
+        return await self.long_term.create_conversation_with_id(
+            conversation_id, title
+        )
+
+    async def save_conversation_turn(self, conversation_id: str,
+                                     user_input: str, assistant_reply: str):
+        """Persist a user-assistant message pair."""
+        await self.long_term.save_message(conversation_id, "user", user_input)
+        await self.long_term.save_message(conversation_id, "assistant", assistant_reply)
+
+    async def list_conversations(self, limit: int = 50):
+        """List recent conversations."""
+        return await self.long_term.list_conversations(limit)
+
+    async def get_conversation_messages(self, conversation_id: str) -> list[dict]:
+        """Load all messages from a conversation."""
+        return await self.long_term.get_conversation_messages(conversation_id)
+
+    async def update_conversation_title(self, conversation_id: str, title: str):
+        """Rename a conversation."""
+        await self.long_term.update_conversation_title(conversation_id, title)

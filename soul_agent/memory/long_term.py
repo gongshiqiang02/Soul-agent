@@ -21,6 +21,15 @@ class MemoryEntry:
     similarity: float = 0.0  # Set during retrieval
 
 
+@dataclass
+class ConversationEntry:
+    id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int = 0
+
+
 class LongTermMemory:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -119,3 +128,99 @@ class LongTermMemory:
             access_count=row["access_count"],
             metadata=json.loads(row["metadata"]) if row["metadata"] else {},
         )
+
+    # ── Conversation CRUD ──────────────────────────────────────────
+
+    async def create_conversation(self, title: str = "") -> str:
+        """创建新会话，返回 conversation_id"""
+        conv_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        display_title = title or "新对话"
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (conv_id, display_title, now, now),
+            )
+            await db.commit()
+        return conv_id
+
+    async def create_conversation_with_id(self, conversation_id: str,
+                                          title: str = "") -> str:
+        """使用指定 ID 创建会话（用于 Conversation 自行生成 ID 的场景）"""
+        now = datetime.now().isoformat()
+        display_title = title or "新对话"
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (conversation_id, display_title, now, now),
+            )
+            await db.commit()
+        return conversation_id
+
+    async def save_message(self, conversation_id: str, role: str,
+                           content: str, tool_calls: str | None = None) -> str:
+        """保存一条消息到指定会话，返回 message_id"""
+        msg_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO messages (id, conversation_id, role, content, tool_calls, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (msg_id, conversation_id, role, content, tool_calls, now),
+            )
+            await db.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?",
+                (now, conversation_id),
+            )
+            await db.commit()
+        return msg_id
+
+    async def list_conversations(self, limit: int = 50) -> list[ConversationEntry]:
+        """列出所有会话（按更新时间倒序），含消息数"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """SELECT c.id, c.title, c.created_at, c.updated_at,
+                          (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) as message_count
+                   FROM conversations c
+                   ORDER BY c.updated_at DESC
+                   LIMIT ?""",
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [
+                ConversationEntry(
+                    id=row["id"],
+                    title=row["title"],
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                    updated_at=datetime.fromisoformat(row["updated_at"]),
+                    message_count=row["message_count"],
+                )
+                for row in rows
+            ]
+
+    async def get_conversation_messages(self, conversation_id: str) -> list[dict]:
+        """获取某个会话的全部消息"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT role, content, tool_calls FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+                (conversation_id,),
+            )
+            rows = await cursor.fetchall()
+            messages = []
+            for row in rows:
+                msg = {"role": row["role"], "content": row["content"]}
+                if row["tool_calls"]:
+                    msg["tool_calls"] = json.loads(row["tool_calls"])
+                messages.append(msg)
+            return messages
+
+    async def update_conversation_title(self, conversation_id: str, title: str):
+        """重命名会话"""
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+                (title, now, conversation_id),
+            )
+            await db.commit()
