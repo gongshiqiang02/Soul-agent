@@ -18,13 +18,16 @@ soul-agent memory          # 查看记忆列表
 soul-agent config          # 查看当前配置
 
 # 测试
-pytest tests/ -v                              # 全部 42 个测试
-pytest tests/test_agent.py -v                 # Agent 核心（10 个）
+pytest tests/ -v                              # 全部 76 个测试
+pytest tests/test_agent.py -v                 # Agent 核心（29 个）
 pytest tests/test_memory.py -v                # 记忆系统（14 个）
 pytest tests/test_tools.py -v                 # 工具系统（18 个）
+pytest tests/test_conversation_persistence.py -v  # 会话持久化（9 个）
+pytest tests/test_plan_tracker.py -v          # 计划追踪（6 个）
 
 # 代码检查
 ruff check .
+ruff check --fix .  # 自动修复
 ```
 
 ## 架构总览
@@ -45,15 +48,18 @@ ruff check .
 
 Agent 实现 **ReAct（Reasoning + Acting）** 模式，每次 `run(user_input)` 执行：
 
-1. 调用 `MemoryManager.retrieve()` 检索相关记忆
-2. 构建系统提示词（注入工具描述 + 记忆上下文）
-3. 通过 `Conversation.build_messages()` 构建消息列表
-4. **ReAct 循环**（最多 `max_iterations` 轮，默认 10）：
-   - 调用 LLM，附带工具 schema
+1. 启动计时，初始化统计信息（工具调用次数、tokens）
+2. 调用 `MemoryManager.retrieve()` 检索相关记忆
+3. 构建系统提示词（注入工具描述 + 记忆上下文）
+4. 通过 `Conversation.build_messages()` 构建消息列表
+5. **ReAct 循环**（最多 `max_iterations` 轮，默认 10）：
+   - 更新状态（`on_status` 回调显示 spinner）
+   - 调用 LLM（支持流式 + 工具），附带工具 schema
    - 若返回 `tool_calls`：格式化消息 → `ToolExecutor.execute_batch()` → 追加结果，继续循环
    - 若返回纯文本：退出循环
-5. 调用 `MemoryManager.process_turn()` 异步提取记忆（LLM 判断是否需要记忆）
-6. `Conversation.add_turn()` 更新对话历史
+6. 调用 `MemoryManager.process_turn()` 异步提取记忆（LLM 判断是否需要记忆）
+7. `Conversation.add_turn()` 更新对话历史
+8. 记录统计信息到 `self.last_run_stats`（迭代次数、工具调用次数、耗时、tokens）
 
 ### 记忆系统（`memory/`）
 
@@ -70,10 +76,12 @@ Agent 实现 **ReAct（Reasoning + Acting）** 模式，每次 `run(user_input)`
 
 ### LLM 适配层（`llm/`）
 
-- `LLMClient` 是门面，根据 `provider` 配置分发到具体 Provider
-- `OpenAIProvider` — 基于 `openai` SDK 的 AsyncOpenAI，支持普通和流式聊天
+- `LLMClient` 是门面，根据 `provider` 配置分发到具体 Provider，支持 `on_delta` 回调参数
+- `OpenAIProvider` — 基于 `openai` SDK 的 AsyncOpenAI，支持普通和流式聊天（含 tools）
+  - 流式模式下逐块累积 `content` 和 `tool_calls`，通过 `on_delta` 回调通知 UI
+  - 尝试获取 `stream_options.include_usage` 以获得 token 统计，若后端不支持则降级
 - `LocalProvider(OpenAIProvider)` — 仅覆写 `base_url` 为 `http://localhost:11434/v1`，用于 Ollama
-- Provider 返回统一的 `LLMResponse` 对象（含 `content`、`tool_calls`、`has_tool_calls` 属性）
+- Provider 返回统一的 `LLMResponse` 对象（含 `content`、`tool_calls`、`usage`、`has_tool_calls` 属性）
 
 ### 配置加载优先级（`config/settings.py`）
 
@@ -100,9 +108,20 @@ SoulAgentError（基础）
 
 ### 终端 UI（`ui/`）
 
-- `Renderer` — 基于 Rich 的 Markdown 渲染、面板、表格、欢迎界面、工具调用展示
+- `Renderer` — 基于 Rich 的渲染器，参考 Claude Code 紧凑风格
+  - **统一 Live 区域**：底部 transient Live 显示 spinner/计划面板/流式 Markdown
+  - **工具调用显示**：`⏺ tool_name(参数摘要)` 格式，内置工具智能格式化参数
+  - **工具结果显示**：`⎿` 连接符 + 摘要（read_file 显示行数，其他显示前3行）
+  - **流式回复**：逐块累积到缓冲区，Live 实时更新 Markdown
+  - **回合统计**：`✓ 完成 · N 次工具调用 · X.Xs · Xk tokens`
+  - **信息化欢迎界面**：显示模型、provider、工作目录、工具数、记忆状态
 - `InputHandler` — 基于 prompt_toolkit，带历史记录和自动补全
-- `themes.py` — 3 套主题：monokai、dracula、default
+- `themes.py` — 3 套主题（monokai、dracula、default），新增 connector_color、success_color、stats_color
+
+**关键约束**：
+- Rich 只允许一个活动 Live 实例，计划面板/spinner/流式输出必须合并到统一 Live
+- prompt_toolkit 读取输入前必须停止 Live（`clear_plan_live()`）
+- 工具调用前若有流式缓冲，先 flush 输出（保留思考过程文本）
 
 ### 对话管理（`core/conversation.py`）
 

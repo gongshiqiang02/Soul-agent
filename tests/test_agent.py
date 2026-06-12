@@ -2,12 +2,11 @@
 
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from soul_agent.core.agent import Agent
 from soul_agent.core.conversation import Conversation
 from soul_agent.core.context import ContextManager
-from soul_agent.core.planner import TaskPlanner
 
 
 class TestConversation:

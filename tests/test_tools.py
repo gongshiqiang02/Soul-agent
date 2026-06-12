@@ -1,9 +1,6 @@
 """工具系统测试"""
 
 import pytest
-import tempfile
-import os
-from pathlib import Path
 from unittest.mock import MagicMock
 
 from soul_agent.tools.base import Tool, ToolResult

@@ -9,6 +9,9 @@ THEMES = {
         "tool_color": "bright_magenta",
         "info_color": "dim",
         "border_color": "bright_blue",
+        "connector_color": "dim",
+        "success_color": "bright_green",
+        "stats_color": "dim",
     },
     "dracula": {
         "user_color": "green",
@@ -18,6 +21,9 @@ THEMES = {
         "tool_color": "magenta",
         "info_color": "dim",
         "border_color": "purple",
+        "connector_color": "dim",
+        "success_color": "green",
+        "stats_color": "dim",
     },
     "default": {
         "user_color": "green",
@@ -27,9 +33,16 @@ THEMES = {
         "tool_color": "blue",
         "info_color": "dim",
         "border_color": "white",
+        "connector_color": "dim",
+        "success_color": "green",
+        "stats_color": "dim",
     },
 }
 
 
 def get_theme(name: str) -> dict:
-    return THEMES.get(name, THEMES["default"])
+    """获取主题,与default主题合并返回,确保所有key存在"""
+    base = THEMES["default"].copy()
+    selected = THEMES.get(name, {})
+    base.update(selected)
+    return base

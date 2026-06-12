@@ -28,7 +28,7 @@ class OpenAIProvider:
         )
         self.model = config.model
 
-    async def chat(self, messages, tools=None, stream=True) -> LLMResponse:
+    async def chat(self, messages, tools=None, stream=True, on_delta=None) -> LLMResponse:
         kwargs = {
             "model": self.model,
             "messages": messages,
@@ -39,8 +39,8 @@ class OpenAIProvider:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        if stream and not tools:
-            return await self._stream_chat(**kwargs)
+        if stream:
+            return await self._stream_chat(on_delta=on_delta, **kwargs)
         else:
             return await self._normal_chat(**kwargs)
 
@@ -53,15 +53,79 @@ class OpenAIProvider:
             usage=response.usage,
         )
 
-    async def _stream_chat(self, **kwargs) -> LLMResponse:
+    async def _stream_chat(self, on_delta=None, **kwargs) -> LLMResponse:
+        """流式聊天,支持tools和usage获取"""
         kwargs["stream"] = True
-        chunks = []
-        async for chunk in await self.client.chat.completions.create(**kwargs):
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                chunks.append(delta.content)
 
-        return LLMResponse(content="".join(chunks))
+        # 尝试获取usage
+        try:
+            kwargs["stream_options"] = {"include_usage": True}
+        except Exception:
+            pass
+
+        content_chunks = []
+        tool_calls_dict = {}  # {index: {"id": ..., "name": ..., "arguments": ""}}
+        usage = None
+
+        try:
+            async for chunk in await self.client.chat.completions.create(**kwargs):
+                # 处理usage
+                if hasattr(chunk, "usage") and chunk.usage:
+                    usage = chunk.usage
+
+                if not chunk.choices:
+                    continue
+
+                delta = chunk.choices[0].delta
+
+                # 处理content
+                if delta.content:
+                    content_chunks.append(delta.content)
+                    if on_delta:
+                        on_delta(delta.content)
+
+                # 处理tool_calls
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_calls_dict:
+                            tool_calls_dict[idx] = {
+                                "id": tc_delta.id or "",
+                                "name": tc_delta.function.name if tc_delta.function else "",
+                                "arguments": "",
+                            }
+                        if tc_delta.id:
+                            tool_calls_dict[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                tool_calls_dict[idx]["name"] = tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                tool_calls_dict[idx]["arguments"] += tc_delta.function.arguments
+
+        except Exception as e:
+            # 若stream_options不支持,重试不带usage
+            if "stream_options" in str(e) and "stream_options" in kwargs:
+                logger.warning("后端不支持stream_options,重试不获取usage")
+                del kwargs["stream_options"]
+                return await self._stream_chat(on_delta=on_delta, **kwargs)
+            raise
+
+        # 解析tool_calls的arguments
+        tool_calls = []
+        for idx in sorted(tool_calls_dict.keys()):
+            tc = tool_calls_dict[idx]
+            try:
+                tc["arguments"] = json.loads(tc["arguments"]) if tc["arguments"] else {}
+            except json.JSONDecodeError:
+                logger.error(f"tool_call arguments JSON解析失败: {tc['arguments']}")
+                tc["arguments"] = {}
+            tool_calls.append(tc)
+
+        return LLMResponse(
+            content="".join(content_chunks),
+            tool_calls=tool_calls,
+            usage=usage,
+        )
 
     def _parse_tool_calls(self, tool_calls):
         if not tool_calls:

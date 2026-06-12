@@ -39,16 +39,24 @@ class Agent:
         self._plan_tracker = None  # 计划进度追踪器
         self._on_plan_progress = None  # callback for plan progress
         self._on_tool_result = None  # callback for tool results
+        self._on_status = None  # callback for status updates
+        self.last_run_stats = {}  # 最近一次运行的统计信息
 
-    def set_callbacks(self, on_tool_call=None, on_stream=None, on_plan_progress=None, on_tool_result=None):
+    def set_callbacks(self, on_tool_call=None, on_stream=None, on_plan_progress=None, on_tool_result=None, on_status=None):
         """设置UI回调"""
         self._on_tool_call = on_tool_call
         self._on_stream = on_stream
         self._on_plan_progress = on_plan_progress
         self._on_tool_result = on_tool_result
+        self._on_status = on_status
 
     async def run(self, user_input: str) -> str:
         """处理一次用户输入，返回最终响应"""
+        import time
+        start_time = time.time()
+        tool_calls_count = 0
+        total_tokens = 0
+
         # 0. 确保会话已持久化
         await self._ensure_conversation_persisted()
 
@@ -104,13 +112,26 @@ class Agent:
         final_content = ""
 
         for i in range(max_iter):
+            # 更新状态
+            if self._on_status:
+                self._on_status(f"思考中… (第 {i+1} 轮)")
+
             response = await self.llm.chat(
                 messages,
                 tools=self.tools.schemas if self.tools.schemas else None,
-                stream=False,
+                stream=True,
+                on_delta=self._on_stream,
             )
 
+            # 累积tokens
+            if hasattr(response, "usage") and response.usage:
+                usage_total = getattr(response.usage, "total_tokens", None)
+                if isinstance(usage_total, int):
+                    total_tokens += usage_total
+
             if response.has_tool_calls:
+                tool_calls_count += len(response.tool_calls)
+
                 # 通知UI正在执行工具
                 if self._on_tool_call:
                     for tc in response.tool_calls:
@@ -184,6 +205,15 @@ class Agent:
         max_msgs = self.config.agent.max_iterations * 2 + 40  # 留足余量
         if len(self.conversation.messages) > max_msgs:
             self.conversation.messages = self.conversation.messages[-max_msgs:]
+
+        # 7. 记录统计信息
+        elapsed = time.time() - start_time
+        self.last_run_stats = {
+            "iterations": i + 1,
+            "tool_calls": tool_calls_count,
+            "elapsed": elapsed,
+            "tokens": total_tokens if total_tokens > 0 else None,
+        }
 
         return final_content
 

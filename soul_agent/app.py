@@ -49,9 +49,6 @@ async def run_chat():
     """交互式对话主循环"""
     config = load_config()
     renderer = Renderer(config.ui.theme)
-    input_handler = InputHandler()
-
-    renderer.render_welcome()
 
     try:
         agent = await create_agent(config)
@@ -60,11 +57,22 @@ async def run_chat():
         logger.error(f"初始化失败: {e}", exc_info=True)
         return
 
+    # 显示欢迎界面(在agent创建成功后)
+    renderer.render_welcome(
+        config=config,
+        tool_count=len(agent.tools.names),
+        memory_enabled=config.memory.enabled,
+    )
+
+    input_handler = InputHandler()
+
     # 设置工具调用回调
     agent.set_callbacks(
         on_tool_call=lambda name, args: renderer.render_tool_call(name, args),
         on_plan_progress=lambda tracker: renderer.render_plan_steps(tracker),
         on_tool_result=lambda name, success, output, error: renderer.render_tool_result(name, success, output, error),
+        on_stream=renderer.on_stream_chunk,
+        on_status=renderer.update_status,
     )
 
     while True:
@@ -116,7 +124,6 @@ async def run_chat():
                     renderer.render_info(f"✅ 会话已重命名为: {new_name}")
                 continue
             elif cmd == "/config":
-                from rich.pretty import pretty_repr
                 renderer.render_info(f"模型: {config.llm.model}")
                 renderer.render_info(f"Provider: {config.llm.provider}")
                 continue
@@ -128,10 +135,11 @@ async def run_chat():
         renderer.render_user_input(user_input)
 
         try:
+            renderer.begin_turn()
             response = await agent.run(user_input)
-            renderer.clear_plan_live()  # 收起 Live 面板后显示回复
-            renderer.render_assistant(response)
+            renderer.end_turn(agent.last_run_stats, response)
         except Exception as e:
+            renderer.end_turn()  # 确保Live被停止
             renderer.render_error(f"处理失败: {e}")
             logger.error(f"Agent运行错误: {e}", exc_info=True)
 
@@ -143,9 +151,20 @@ async def run_ask(message: str):
 
     try:
         agent = await create_agent(config)
+
+        # 设置回调,单次模式也显示工具调用
+        agent.set_callbacks(
+            on_tool_call=lambda name, args: renderer.render_tool_call(name, args),
+            on_tool_result=lambda name, success, output, error: renderer.render_tool_result(name, success, output, error),
+            on_stream=renderer.on_stream_chunk,
+            on_status=renderer.update_status,
+        )
+
+        renderer.begin_turn()
         response = await agent.run(message)
-        renderer.render_assistant(response)
+        renderer.end_turn(agent.last_run_stats, response)
     except Exception as e:
+        renderer.end_turn()  # 确保Live被停止
         renderer.render_error(f"处理失败: {e}")
 
 
