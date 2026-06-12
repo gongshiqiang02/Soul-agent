@@ -63,6 +63,31 @@ class MemoryRetriever:
         except Exception as e:
             logger.warning(f"Failed to delete embedding: {e}")
 
+    def check_duplicate(self, content: str, threshold: float = 0.80) -> tuple[bool, str | None]:
+        """通过向量相似度检查是否存在近似重复记忆。
+
+        返回 (是否重复, 已有记忆的 ID)。
+        """
+        if not self.has_vector_search:
+            return False, None
+
+        try:
+            results = self._collection.query(
+                query_texts=[content],
+                n_results=1,
+            )
+            if not results["ids"] or not results["ids"][0]:
+                return False, None
+
+            distance = results["distances"][0][0]
+            similarity = max(0.0, 1.0 - distance)
+            if similarity >= threshold:
+                return True, results["ids"][0][0]
+            return False, None
+        except Exception as e:
+            logger.warning(f"重复检查失败: {e}")
+            return False, None
+
     async def retrieve(self, query: str, top_k: int = 5) -> list[MemoryEntry]:
         """Retrieve top-k memories using hybrid scoring."""
         candidates = await self._get_candidates(query, top_k=top_k * 3)
