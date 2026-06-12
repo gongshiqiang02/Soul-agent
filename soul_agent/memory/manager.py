@@ -9,14 +9,28 @@ from soul_agent.memory.retriever import MemoryRetriever
 from soul_agent.memory.summarizer import ConversationSummarizer
 
 EXTRACT_MEMORIES_PROMPT = """分析以下对话，提取需要长期记住的信息。
-每条记忆用JSON格式输出，包含 content, memory_type(fact/preference/event), importance(0-1)。
-如果没有需要记住的信息，返回空数组 []。
+
+提取规则：
+1. 用户的个人信息（姓名、职业、偏好等）→ type: fact
+2. 用户表达的偏好（喜欢/不喜欢）→ type: preference
+3. 重要事件或决定 → type: event
+4. 不提取临时性、无长期价值的信息
+
+## 过滤条件（以下内容返回空数组 []，不要记忆）
+- 助手的操作过程、工具调用结果、代码片段、文件路径、命令输出
+- 通用知识问答内容（如"什么是Python"的回答）
+- 临时性任务信息（如"帮我读一下这个文件"的结果）
+- 对话的元信息（寒暄、客套）
+
+判断标准：这条信息能否帮助你在未来的对话中更好地理解或服务该用户？
 
 用户: {user_input}
 助手: {assistant_reply}
 
 输出格式（纯JSON数组，不要markdown）:
-[{{"content": "...", "memory_type": "fact", "importance": 0.7}}]"""
+[{{"content": "...", "memory_type": "fact", "importance": 0.7}}]
+
+如果没有值得记忆的信息，返回空数组 []。"""
 
 
 class MemoryManager:
@@ -89,16 +103,23 @@ class MemoryManager:
 
     async def store(self, content: str, memory_type: str, importance: float = 0.5,
                     metadata: dict | None = None) -> str:
-        """Store a memory in both SQLite and ChromaDB."""
+        """存储记忆，含去重（精确哈希 + 向量相似度）。"""
+        # 向量相似度近似去重
+        is_dup, existing_id = self.retriever.check_duplicate(content)
+        if is_dup and existing_id:
+            logger.debug(f"检测到近似重复，跳过: {content[:50]}...")
+            return existing_id
+
+        # 存储（LongTermMemory.store 内部处理精确哈希去重）
         memory_id = await self.long_term.store(
             content=content,
             memory_type=memory_type,
             importance=importance,
             metadata=metadata,
         )
-        # Also index in vector DB
+        # 同时写入向量数据库
         self.retriever.add_embedding(memory_id, content, metadata={"memory_type": memory_type})
-        logger.debug(f"Stored memory {memory_id}: {content[:50]}...")
+        logger.debug(f"已存储记忆 {memory_id}: {content[:50]}...")
         return memory_id
 
     async def forget(self, memory_id: str):
