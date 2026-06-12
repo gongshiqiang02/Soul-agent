@@ -1,4 +1,5 @@
 """长期记忆 - 跨会话持久存储"""
+import hashlib
 import uuid
 import json
 from datetime import datetime
@@ -6,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import aiosqlite
+
+from soul_agent.utils.logger import logger
 
 
 @dataclass
@@ -49,7 +52,8 @@ class LongTermMemory:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     access_count INTEGER DEFAULT 0,
-                    metadata TEXT
+                    metadata TEXT,
+                    content_hash TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
                 CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
@@ -71,18 +75,46 @@ class LongTermMemory:
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
             ''')
+            await self._migrate_add_content_hash(db)
 
     async def store(self, content: str, memory_type: str, importance: float = 0.5,
                     metadata: dict | None = None) -> str:
+        # 计算内容哈希用于去重
+        normalized = content.strip().lower()
+        content_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+        # 检查是否已存在相同哈希的记忆
+        existing = await self.find_by_hash(content_hash)
+        if existing:
+            # 如果新记忆的重要性更高，更新
+            if importance > existing.importance:
+                async with aiosqlite.connect(self.db_path) as db:
+                    await db.execute(
+                        "UPDATE memories SET importance = ? WHERE id = ?",
+                        (importance, existing.id),
+                    )
+                    await db.commit()
+            return existing.id
+
         memory_id = str(uuid.uuid4())
         now = datetime.now().isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "INSERT INTO memories (id, content, memory_type, importance, created_at, last_accessed, access_count, metadata) VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
-                (memory_id, content, memory_type, importance, now, now, json.dumps(metadata or {}))
+                "INSERT INTO memories (id, content, memory_type, importance, created_at, last_accessed, access_count, metadata, content_hash) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                (memory_id, content, memory_type, importance, now, now, json.dumps(metadata or {}), content_hash),
             )
             await db.commit()
         return memory_id
+
+    async def find_by_hash(self, content_hash: str) -> MemoryEntry | None:
+        """根据内容哈希查找记忆，未找到返回 None。"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM memories WHERE content_hash = ?", (content_hash,)
+            )
+            row = await cursor.fetchone()
+            return self._row_to_entry(row) if row else None
 
     async def get_all(self, memory_type: str | None = None) -> list[MemoryEntry]:
         async with aiosqlite.connect(self.db_path) as db:
@@ -128,6 +160,60 @@ class LongTermMemory:
             access_count=row["access_count"],
             metadata=json.loads(row["metadata"]) if row["metadata"] else {},
         )
+
+    async def _migrate_add_content_hash(self, db):
+        """为已有数据库添加 content_hash 列并创建 UNIQUE 索引。"""
+        try:
+            # 检查列是否已存在
+            cursor = await db.execute("PRAGMA table_info(memories)")
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "content_hash" not in columns:
+                await db.execute("ALTER TABLE memories ADD COLUMN content_hash TEXT")
+                # 为已有记录填充哈希值
+                cursor = await db.execute("SELECT id, content FROM memories")
+                rows = await cursor.fetchall()
+                for row in rows:
+                    content_hash = hashlib.sha256(row[1].strip().lower().encode("utf-8")).hexdigest()
+                    await db.execute("UPDATE memories SET content_hash = ? WHERE id = ?", (content_hash, row[0]))
+                logger.info("已迁移 memories 表：添加 content_hash 列")
+            # 无论列是新建还是已有，都确保 UNIQUE 索引存在
+            await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(content_hash)")
+            await db.commit()
+        except Exception as e:
+            logger.warning(f"content_hash 迁移失败: {e}")
+
+    async def cleanup_duplicates(self) -> int:
+        """清理重复记忆，保留重要性最高的那条。
+
+        返回清理掉的重复记录数。
+        """
+        removed = 0
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            # 找出有重复 content_hash 的分组
+            cursor = await db.execute("""
+                SELECT content_hash, COUNT(*) as cnt
+                FROM memories
+                WHERE content_hash IS NOT NULL
+                GROUP BY content_hash
+                HAVING cnt > 1
+            """)
+            dupes = await cursor.fetchall()
+
+            for row in dupes:
+                content_hash = row["content_hash"]
+                # 按重要性降序排列，保留第一条，删除其余
+                cursor = await db.execute(
+                    "SELECT id, importance FROM memories WHERE content_hash = ? ORDER BY importance DESC",
+                    (content_hash,)
+                )
+                rows = await cursor.fetchall()
+                for dup_row in rows[1:]:
+                    await db.execute("DELETE FROM memories WHERE id = ?", (dup_row["id"],))
+                    removed += 1
+
+            await db.commit()
+        return removed
 
     # ── Conversation CRUD ──────────────────────────────────────────
 
