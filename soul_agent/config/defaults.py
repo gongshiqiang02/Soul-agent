@@ -20,7 +20,7 @@ DEFAULT_CONFIG = {
         "db_path": "./data/memory.db",
         "vector_db_path": "./data/chroma",
         "max_memories_per_query": 5,
-        "importance_threshold": 0.3,
+        "importance_threshold": 0.5,
         "embedding_model": "text-embedding-3-small",
     },
     "tools": {

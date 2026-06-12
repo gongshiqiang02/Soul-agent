@@ -32,7 +32,7 @@ class MemoryConfig(BaseModel):
     db_path: str = "./data/memory.db"
     vector_db_path: str = "./data/chroma"
     max_memories_per_query: int = 5
-    importance_threshold: float = 0.3
+    importance_threshold: float = 0.5
     embedding_model: str = "text-embedding-3-small"
 
 
