@@ -1,8 +1,6 @@
 """Web请求工具"""
-import json
 import urllib.request
 import urllib.error
-from urllib.parse import urlencode
 
 from soul_agent.tools.base import Tool, ToolResult
 

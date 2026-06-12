@@ -1,13 +1,11 @@
 """记忆系统测试"""
 
 import pytest
-import tempfile
-import os
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from soul_agent.memory.short_term import ShortTermMemory
-from soul_agent.memory.long_term import LongTermMemory, MemoryEntry
+from soul_agent.memory.long_term import LongTermMemory
 from soul_agent.memory.manager import MemoryManager
 
 

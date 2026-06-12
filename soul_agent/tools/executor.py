@@ -1,5 +1,4 @@
 """工具执行器"""
-import json
 from soul_agent.tools.base import ToolResult
 from soul_agent.tools.registry import ToolRegistry
 from soul_agent.utils.logger import logger

@@ -1,5 +1,4 @@
 """文件操作工具"""
-import os
 from pathlib import Path
 
 from soul_agent.tools.base import Tool, ToolResult

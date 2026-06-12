@@ -7,7 +7,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/tests-42%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-76%20passed-brightgreen.svg" alt="Tests">
 </p>
 
 ---
@@ -22,8 +22,8 @@ Soul-agent 是一个运行在终端中的 AI 智能助手。它不仅能通过�
 | 🔧 **工具调用** | 自动执行文件操作、Shell 命令、网络请求等，采用 ReAct 推理循环 |
 | 🧠 **长期记忆** | 自动提取并持久化用户偏好与关键信息，智能混合检索召回 |
 | 📝 **文档读写** | 读取、生成、编辑各类文档 |
-| 📋 **任务规划** | 将复杂任务自动拆解为可执行步骤，逐步完成 |
-| 🎨 **美观终端** | Rich 渲染 Markdown，支持多主题切换 |
+| 📋 **任务规划** | 将复杂任务自动拆解为可执行步骤，实时进度显示 |
+| 🎨 **精致终端 UI** | Claude Code 风格紧凑显示，工具调用参数可见，流式输出，回合统计 |
 | 🔌 **多模型支持** | OpenAI / 兼容 API / Ollama 本地模型，一键切换 |
 
 ---
@@ -116,7 +116,7 @@ tools:
 
 ui:
   theme: "monokai"             # 终端主题: monokai / dracula / default
-  stream: true                 # 是否启用流式输出
+  stream: true                 # 是否启用流式输出（已启用）
   show_thinking: false         # 是否显示思考过程
   language: "zh"               # 界面语言
 ```
@@ -149,10 +149,34 @@ soul-agent chat
 ```
 ┌──────────────────────────────────────────────┐
 │ 🤖 Soul-agent — 更懂你的通用Agent            │
+│ 模型: gpt-4o-mini                            │
+│ Provider: openai                             │
+│ 工作目录: E:\Projects\Soul-agent             │
+│ 已启用工具: 6 个                              │
+│ 记忆系统: 启用                               │
+│                                              │
 │ 输入你的问题开始对话，输入 /help 查看帮助，    │
 │ /quit 退出                                   │
 └──────────────────────────────────────────────┘
->>> 帮我写一个快速排序的 Python 实现
+
+>>> 查看当前目录有哪些文件
+
+✻ 思考中… (第 1 轮)
+
+⏺ list_directory(.)
+  ⎿ [目录] soul_agent
+    [文件] README.md
+    [文件] pyproject.toml
+    … +8 行
+
+🤖 Soul-agent:
+当前目录包含以下内容：
+- **soul_agent/** - 主程序包目录
+- **README.md** - 项目说明文档
+- **pyproject.toml** - 项目配置文件
+...
+
+✓ 完成 · 1 次工具调用 · 3.2s · 1.5k tokens
 ```
 
 ### 单次提问
@@ -182,6 +206,8 @@ soul-agent config
 |------|------|
 | `/help` | 显示帮助信息 |
 | `/memory` | 查看所有记忆列表 |
+| `/history` | 查看历史会话列表 |
+| `/name <标题>` | 为当前会话命名（如 `/name 技术讨论`） |
 | `/clear` | 清除当前对话历史 |
 | `/config` | 显示当前配置信息 |
 | `/quit` | 退出程序（也可用 `/exit` 或 `Ctrl+C`） |
@@ -339,9 +365,11 @@ pytest tests/test_tools.py -v
 
 当前测试覆盖：
 
-- **test_agent.py** — 对话管理、上下文裁剪、Agent ReAct 循环（含工具调用模拟）
-- **test_memory.py** — 短期记忆增删、长期记忆 CRUD、关键词搜索、MemoryManager 集成
-- **test_tools.py** — 工具注册/执行、文件读写、目录列表、文件搜索
+- **test_agent.py** (29 个) — 对话管理、上下文裁剪、Agent ReAct 循环、任务规划、复杂度估算
+- **test_memory.py** (14 个) — 短期记忆增删、长期记忆 CRUD、关键词搜索、MemoryManager 集成
+- **test_tools.py** (18 个) — 工具注册/执行、文件读写、目录列表、文件搜索
+- **test_conversation_persistence.py** (9 个) — 会话持久化、消息存储、历史检索
+- **test_plan_tracker.py** (6 个) — 计划追踪、步骤状态更新
 
 ---
 

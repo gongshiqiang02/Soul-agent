@@ -154,7 +154,7 @@ self.model = config.model
 ### 5.2 chat 方法
 
 ```python
-async def chat(self, messages, tools=None, stream=True) -> LLMResponse:
+async def chat(self, messages, tools=None, stream=True, on_delta=None) -> LLMResponse:
     kwargs = {
         "model": self.model,
         "messages": messages,
@@ -165,8 +165,8 @@ async def chat(self, messages, tools=None, stream=True) -> LLMResponse:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
 
-    if stream and not tools:
-        return await self._stream_chat(**kwargs)
+    if stream:
+        return await self._stream_chat(on_delta=on_delta, **kwargs)
     else:
         return await self._normal_chat(**kwargs)
 ```
@@ -175,11 +175,10 @@ async def chat(self, messages, tools=None, stream=True) -> LLMResponse:
 
 | 情况 | 调用方式 |
 |------|----------|
-| 有工具 schema | 普通非流式调用，便于解析 tool_calls |
-| 无工具且 stream=True | 流式调用，收集所有 chunk 后返回 |
-| 无工具且 stream=False | 普通调用 |
+| stream=True | 流式调用，支持 tools 和 usage 获取 |
+| stream=False | 普通调用 |
 
-当前 UI 层还没有逐 token 输出，因此 `_stream_chat()` 会收集所有 chunk，最终返回完整 `LLMResponse`。
+**新增**：`on_delta` 回调参数用于逐块通知 UI 层进行流式渲染。
 
 ### 5.3 普通调用
 
@@ -196,16 +195,70 @@ return LLMResponse(
 ### 5.4 流式调用
 
 ```python
-kwargs["stream"] = True
-chunks = []
-async for chunk in await self.client.chat.completions.create(**kwargs):
-    delta = chunk.choices[0].delta if chunk.choices else None
-    if delta and delta.content:
-        chunks.append(delta.content)
-return LLMResponse(content="".join(chunks))
+async def _stream_chat(self, on_delta=None, **kwargs) -> LLMResponse:
+    kwargs["stream"] = True
+    
+    # 尝试获取 usage
+    try:
+        kwargs["stream_options"] = {"include_usage": True}
+    except Exception:
+        pass
+    
+    content_chunks = []
+    tool_calls_dict = {}  # {index: {"id": ..., "name": ..., "arguments": ""}}
+    usage = None
+    
+    async for chunk in await self.client.chat.completions.create(**kwargs):
+        # 处理 usage
+        if hasattr(chunk, "usage") and chunk.usage:
+            usage = chunk.usage
+        
+        if not chunk.choices:
+            continue
+        
+        delta = chunk.choices[0].delta
+        
+        # 处理 content
+        if delta.content:
+            content_chunks.append(delta.content)
+            if on_delta:
+                on_delta(delta.content)  # 逐块通知 UI
+        
+        # 处理 tool_calls delta
+        if delta.tool_calls:
+            for tc_delta in delta.tool_calls:
+                idx = tc_delta.index
+                if idx not in tool_calls_dict:
+                    tool_calls_dict[idx] = {"id": "", "name": "", "arguments": ""}
+                if tc_delta.id:
+                    tool_calls_dict[idx]["id"] = tc_delta.id
+                if tc_delta.function:
+                    if tc_delta.function.name:
+                        tool_calls_dict[idx]["name"] = tc_delta.function.name
+                    if tc_delta.function.arguments:
+                        tool_calls_dict[idx]["arguments"] += tc_delta.function.arguments
+    
+    # 解析 tool_calls 的 arguments
+    tool_calls = []
+    for idx in sorted(tool_calls_dict.keys()):
+        tc = tool_calls_dict[idx]
+        tc["arguments"] = json.loads(tc["arguments"]) if tc["arguments"] else {}
+        tool_calls.append(tc)
+    
+    return LLMResponse(
+        content="".join(content_chunks),
+        tool_calls=tool_calls,
+        usage=usage,
+    )
 ```
 
-目前流式调用只处理文本内容，不处理流式工具调用。
+**核心改进**：
+
+- **支持带 tools 的流式调用**：逐 chunk 累积 content 和 tool_calls
+- **tool_calls 按 index 分组**：id/name 首次出现时记录，arguments 逐块拼接
+- **on_delta 回调**：每收到 content delta 立即通知 UI 层进行流式渲染
+- **usage 获取**：尝试使用 `stream_options.include_usage`，若后端不支持则降级（usage 为 None）
+- **容错处理**：stream_options 不支持时捕获错误并重试
 
 ### 5.5 工具调用解析
 

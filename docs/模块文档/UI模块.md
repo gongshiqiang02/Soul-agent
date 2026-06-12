@@ -41,7 +41,7 @@ UI 模块不直接调用 LLM，也不直接执行工具。它只做两件事：
 
 ## 3. Renderer 渲染器
 
-`Renderer` 位于 `renderer.py`，基于 Rich 实现。
+`Renderer` 位于 `renderer.py`，基于 Rich 实现。采用 Claude Code 紧凑风格。
 
 ### 3.1 初始化
 
@@ -50,18 +50,26 @@ class Renderer:
     def __init__(self, theme_name: str = "monokai"):
         self.console = Console()
         self.theme = get_theme(theme_name)
-        self._plan_live: Live | None = None  # 计划面板 Live 上下文
+        self._live: Live | None = None  # 统一的底部Live区域
+        self._plan_tracker = None  # 当前计划
+        self._status_text: str = ""  # spinner状态文本
+        self._stream_buffer: str = ""  # 流式回复缓冲
+        self._stream_active: bool = False  # 本轮是否有流式输出
 ```
 
-初始化时创建一个 Rich `Console`，并根据主题名获取颜色配置。
+初始化时创建一个 Rich `Console`，并根据主题名获取颜色配置。维护统一的 Live 实例用于底部动态显示。
 
 ### 3.2 欢迎界面
 
 ```python
-def render_welcome(self):
+def render_welcome(self, config=None, tool_count=0, memory_enabled=False):
     welcome = Text()
     welcome.append("🤖 Soul-agent", style="bold bright_cyan")
     ...
+    if config:
+        welcome.append("模型: ", style="dim")
+        welcome.append(f"{config.llm.model}\n", style="bright_cyan")
+        # 显示 provider、工作目录、工具数、记忆状态
     self.console.print(Panel(welcome, border_style=self.theme["border_color"]))
 ```
 
@@ -70,6 +78,7 @@ def render_welcome(self):
 - `Text` 拼接多段带样式文本
 - `Panel` 绘制边框
 - `border_style` 由主题控制
+- **新增**：显示模型、provider、工作目录、已启用工具数量、记忆系统状态（信息化）
 
 ### 3.3 用户输入渲染
 
@@ -108,54 +117,147 @@ def render_assistant(self, text: str):
 
 ```python
 def render_tool_call(self, tool_name: str, args: dict):
-    self.console.print(
-        f"  [{self.theme['tool_color']}]🔧 调用工具: {tool_name}[/]",
-        style="dim",
-    )
+    # 流式回复中若有缓冲,先输出它
+    if self._stream_buffer:
+        self._flush_stream_buffer()
+    
+    # 格式化参数摘要
+    param_str = self._format_tool_params(tool_name, args)
+    line = f"⏺ [{self.theme['tool_color']}]{tool_name}[/]({param_str})"
+    if len(line) > 120:
+        line = line[:117] + "..."
+    self.console.print(line)
 ```
 
-该方法由 Agent 的 `on_tool_call` 回调触发。当前只显示工具名称，没有展示完整参数，避免终端输出过长。
+该方法由 Agent 的 `on_tool_call` 回调触发。**Claude Code 紧凑风格**：
+
+- 格式：`⏺ tool_name(参数摘要)`
+- 内置工具智能格式化（见 `_format_tool_params`）：
+  - `read_file` → 显示 path
+  - `write_file` → 显示 path + content 大小（如 `1.2KB`）
+  - `list_directory` → 显示 path，recursive 时加标记
+  - `run_command` → 显示 command
+  - `web_request` → 显示 method + url
+  - `search_files` → 显示 pattern + path
+  - 未知工具 → fallback 为 `k=v` 序列，值截断 60 字符
+- 整行截断 120 字符
+- **修复核心问题**：之前只显示工具名，现在参数可见
 
 ### 3.6 工具结果渲染
 
 ```python
 def render_tool_result(self, tool_name: str, success: bool, output: str, error: str | None = None):
-    """渲染工具执行结果"""
-    display = output[:300] + ("..." if len(output) > 300 else "")
-    if success:
-        self.console.print(
-            f"  [{self.theme['tool_color']}]✅ {tool_name}[/] [dim]{display}[/]",
-            style="dim",
-        )
-    else:
-        self.console.print(
-            f"  [{self.theme['error_color']}]❌ {tool_name}: {error or display}[/]",
-            style="dim",
-        )
+    """渲染工具执行结果 - 连接符风格"""
+    connector = f"[{self.theme['connector_color']}]  ⎿[/] "
+    
+    if not success:
+        self.console.print(f"{connector}[{self.theme['error_color']}]错误: {error or output}[/]")
+        return
+    
+    # 成功结果 - 特殊处理read_file
+    if tool_name == "read_file":
+        lines = output.count("\n") + 1
+        self.console.print(f"{connector}读取 {lines} 行")
+        return
+    
+    # 其他工具 - 显示前3行
+    lines = output.split("\n")
+    for i, line in enumerate(lines[:3]):
+        if i == 0:
+            self.console.print(f"{connector}{line}")
+        else:
+            self.console.print(f"    {line}")
+    
+    if len(lines) > 3:
+        extra = len(lines) - 3
+        self.console.print(f"    [{self.theme['stats_color']}]… +{extra} 行[/]")
 ```
 
 该方法由 Agent 的 `on_tool_result` 回调触发：
 
-- **成功**：绿色 `✅ tool_name` + 输出摘要（截断 300 字符）
-- **失败**：红色 `❌ tool_name` + 错误信息
+- **连接符风格**：使用 `⎿` 连接符（类似 Claude Code 的 tree 风格）
+- **read_file 优化**：成功时只显示 `⎿ 读取 N 行`，不倾倒全部内容
+- **其他工具**：显示前 3 行，超出显示 `… +N 行`（dim 颜色）
+- **失败**：红色 `⎿ 错误: xxx`
+- **解决了之前问题**：不再截断 300 字符挤在一行，可读性大幅提升
 
-解决了之前"调用工具后看不到执行结果"的问题。
-
-### 3.7 计划进度面板
+### 3.7 统一 Live 管理与流式渲染
 
 ```python
-def _build_plan_panel(self, tracker) -> Panel:
-    """构建计划面板"""
-    # 展示任务名、完成进度（done/total）、每个步骤的状态和工具
+def _build_live_content(self):
+    """构建统一Live区域的内容"""
+    parts = []
+    if self._plan_tracker and self._plan_tracker.steps:
+        parts.append(self._build_plan_panel(self._plan_tracker))
+    if self._stream_buffer:
+        parts.append(Markdown(self._stream_buffer + " ▌"))
+    elif self._status_text:
+        spinner = Spinner("dots", text=self._status_text, style=self.theme["info_color"])
+        parts.append(spinner)
+    return Group(*parts) if parts else Text("")
 
-def render_plan_steps(self, tracker):
-    """以 Rich Live 模式在终端底部原地刷新计划进度"""
+def begin_turn(self):
+    """开始新的对话轮次,启动Live"""
+    self._stream_buffer = ""
+    self._stream_active = False
+    if self._live is None:
+        self._live = Live(
+            self._build_live_content(),
+            console=self.console,
+            auto_refresh=True,
+            transient=True,
+            screen=False,
+        )
+        self._live.start()
 
-def clear_plan_live(self):
-    """停止 Live 显示，恢复终端正常滚动"""
+def update_status(self, text: str):
+    """更新状态文本(spinner)"""
+    self._status_text = text
+    if self._live:
+        self._live.update(self._build_live_content())
+
+def on_stream_chunk(self, chunk: str):
+    """接收流式回复块"""
+    self._stream_buffer += chunk
+    self._stream_active = True
+    if self._live:
+        self._live.update(self._build_live_content())
+
+def end_turn(self, stats: dict | None = None, final_text: str = ""):
+    """结束对话轮次,停止Live并输出最终内容"""
+    if self._live:
+        self._live.stop()
+        self._live = None
+    
+    # 输出最终回复
+    if final_text:
+        self.render_assistant(final_text)
+    
+    # 输出统计行
+    if stats:
+        parts = [f"[{self.theme['success_color']}]✓ 完成[/]"]
+        if stats.get("tool_calls", 0) > 0:
+            parts.append(f"{stats['tool_calls']} 次工具调用")
+        if stats.get("elapsed"):
+            parts.append(f"{stats['elapsed']:.1f}s")
+        if stats.get("tokens"):
+            tokens = stats["tokens"]
+            parts.append(f"{tokens/1000:.1f}k tokens" if tokens >= 1000 else f"{tokens} tokens")
+        self.console.print(f"[{self.theme['stats_color']}]{' · '.join(parts)}[/]\n")
 ```
 
-计划面板使用 Rich `Live` 组件，当 Agent 执行复杂任务的各个步骤时，面板在终端底部原地刷新（不滚动输出）。任务完成后由 `clear_plan_live()` 收起面板。Live 面板使用 `transient=True` 模式，停止后不留痕迹。
+**核心架构改进**：
+
+- **统一 Live 实例**：Rich 只允许一个活动 Live，计划面板/spinner/流式输出必须合并
+- **动态内容组合**：`_build_live_content()` 用 `Group` 组合多个元素
+- **三种状态**：
+  1. 思考中 → 显示 Spinner + 状态文本（如 `✻ 思考中… (第 N 轮)`）
+  2. 流式回复 → 显示 Markdown(缓冲 + "▌" 光标)
+  3. 计划执行 → 同时显示计划面板和状态
+- **离散事件**：工具调用/结果用 `console.print()` 直接输出，自动滚动到 Live 上方
+- **流式渲染**：`on_stream_chunk` 逐块累积，Live 实时更新 Markdown
+- **回合统计**：`end_turn` 输出 `✓ 完成 · N 次工具调用 · X.Xs · Xk tokens`
+- **transient 模式**：Live 停止后不留痕迹
 
 ### 3.8 错误与提示信息
 
@@ -293,6 +395,9 @@ async def get_input(self, prompt_text: str = ">>> ") -> str:
     "tool_color": "bright_magenta",
     "info_color": "dim",
     "border_color": "bright_blue",
+    "connector_color": "dim",          # 新增：⎿ 连接符
+    "success_color": "bright_green",   # 新增：成功提示
+    "stats_color": "dim",              # 新增：统计行
 }
 ```
 
@@ -305,6 +410,9 @@ async def get_input(self, prompt_text: str = ">>> ") -> str:
 | `tool_color` | 工具调用提示 |
 | `info_color` | 普通提示 |
 | `border_color` | Panel 边框 |
+| `connector_color` | 工具结果连接符 `⎿` |
+| `success_color` | 成功提示（如统计行的 `✓`） |
+| `stats_color` | 统计行文本 |
 
 ### 5.2 内置主题
 
@@ -320,10 +428,14 @@ async def get_input(self, prompt_text: str = ">>> ") -> str:
 
 ```python
 def get_theme(name: str) -> dict:
-    return THEMES.get(name, THEMES["default"])
+    """获取主题,与default主题合并返回,确保所有key存在"""
+    base = THEMES["default"].copy()
+    selected = THEMES.get(name, {})
+    base.update(selected)
+    return base
 ```
 
-如果主题不存在，则回退到 `default`。
+如果主题不存在，则回退到 `default`。**改进**：与 default 主题合并返回，确保新增的颜色 key 在旧主题中也存在，避免 KeyError。
 
 ---
 
@@ -335,6 +447,13 @@ def get_theme(name: str) -> dict:
 config = load_config()
 renderer = Renderer(config.ui.theme)
 input_handler = InputHandler()
+
+# 显示欢迎界面(在agent创建成功后)
+renderer.render_welcome(
+    config=config,
+    tool_count=len(agent.tools.names),
+    memory_enabled=config.memory.enabled,
+)
 ```
 
 交互主循环：
@@ -344,16 +463,23 @@ agent.set_callbacks(
     on_tool_call=lambda name, args: renderer.render_tool_call(name, args),
     on_plan_progress=lambda tracker: renderer.render_plan_steps(tracker),
     on_tool_result=lambda name, success, output, error: renderer.render_tool_result(name, success, output, error),
+    on_stream=renderer.on_stream_chunk,      # 新增：流式回调
+    on_status=renderer.update_status,        # 新增：状态回调
 )
 
 while True:
     user_input = await input_handler.get_input()
     ...
-    renderer.clear_plan_live()
+    renderer.clear_plan_live()  # 清除上一轮Live
     renderer.render_user_input(user_input)
-    response = await agent.run(user_input)
-    renderer.clear_plan_live()
-    renderer.render_assistant(response)
+    
+    try:
+        renderer.begin_turn()  # 启动Live
+        response = await agent.run(user_input)
+        renderer.end_turn(agent.last_run_stats, response)  # 停止Live并输出统计
+    except Exception as e:
+        renderer.end_turn()  # 确保Live被停止
+        renderer.render_error(f"处理失败: {e}")
 ```
 
 系统命令也由 `app.py` 调用 Renderer 输出：
@@ -398,10 +524,13 @@ UI 层无需修改代码即可切换配色。
 
 ## 8. 当前限制与改进方向
 
-1. **未实现真正流式渲染**：`render_assistant()` 当前一次性输出完整回复。
-2. **工具参数未显示**：`render_tool_call()` 只显示工具名，未来可折叠显示参数。
-3. **帮助文本硬编码**：交互命令变化时需手动更新 `render_help()`。
-4. **主题字段未完全使用**：`system_color` 当前基本预留。
-5. ~~**缺少进度动画**~~ **已完成** — `render_plan_steps()` 使用 Rich Live 组件在终端底部原地刷新计划进度面板。
-6. ~~**工具结果不显示**~~ **已完成** — `render_tool_result()` 在工具执行后显示成功/失败状态和输出摘要。
-7. ~~**空内容不提示**~~ **已完成** — `render_assistant()` 检测空内容并显示 `(Agent 无输出)` 提示。
+1. ~~**未实现真正流式渲染**~~ **已完成** — `on_stream_chunk()` + Live 实时更新 Markdown
+2. ~~**工具参数未显示**~~ **已完成** — `_format_tool_params()` 智能格式化 6 个内置工具参数
+3. **帮助文本硬编码**：交互命令变化时需手动更新 `render_help()`
+4. **主题字段未完全使用**：`system_color` 当前基本预留
+5. ~~**缺少进度动画**~~ **已完成** — 统一 Live 区域显示 spinner/计划面板/流式输出
+6. ~~**工具结果不显示**~~ **已完成** — `render_tool_result()` 连接符风格显示摘要
+7. ~~**空内容不提示**~~ **已完成** — `render_assistant()` 检测空内容并显示提示
+8. ~~**无回合统计**~~ **已完成** — `end_turn()` 输出统计行（工具次数、耗时、tokens）
+9. ~~**欢迎界面信息少**~~ **已完成** — 显示模型、provider、工作目录、工具数、记忆状态
+10. **可配置详细度**：未来可添加 `verbose` 模式，显示完整参数和完整输出

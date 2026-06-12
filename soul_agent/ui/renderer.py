@@ -1,9 +1,11 @@
 """Rich终端渲染器"""
 
-from rich.console import Console
+import os
+from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.spinner import Spinner
 from rich.text import Text
 from rich.table import Table
 
@@ -16,13 +18,30 @@ class Renderer:
     def __init__(self, theme_name: str = "monokai"):
         self.console = Console()
         self.theme = get_theme(theme_name)
-        self._plan_live: Live | None = None  # 固定在底部的计划面板
+        self._live: Live | None = None  # 统一的底部Live区域
+        self._plan_tracker = None  # 当前计划
+        self._status_text: str = ""  # spinner状态文本
+        self._stream_buffer: str = ""  # 流式回复缓冲
+        self._stream_active: bool = False  # 本轮是否有流式输出
 
-    def render_welcome(self):
+    def render_welcome(self, config=None, tool_count=0, memory_enabled=False):
         """渲染欢迎界面"""
         welcome = Text()
         welcome.append("🤖 Soul-agent", style="bold bright_cyan")
-        welcome.append(" — 更懂你的通用Agent\n", style="dim")
+        welcome.append(" — 更懂你的通用Agent\n\n", style="dim")
+
+        if config:
+            welcome.append("模型: ", style="dim")
+            welcome.append(f"{config.llm.model}\n", style="bright_cyan")
+            welcome.append("Provider: ", style="dim")
+            welcome.append(f"{config.llm.provider}\n", style="cyan")
+            welcome.append("工作目录: ", style="dim")
+            welcome.append(f"{os.getcwd()}\n", style="cyan")
+            welcome.append("已启用工具: ", style="dim")
+            welcome.append(f"{tool_count} 个\n", style="green")
+            welcome.append("记忆系统: ", style="dim")
+            welcome.append(f"{'启用' if memory_enabled else '禁用'}\n\n", style="green" if memory_enabled else "yellow")
+
         welcome.append("输入你的问题开始对话，输入 ", style="dim")
         welcome.append("/help", style="bold yellow")
         welcome.append(" 查看帮助，", style="dim")
@@ -48,25 +67,87 @@ class Renderer:
             self.console.print(text)
 
     def render_tool_call(self, tool_name: str, args: dict):
-        """渲染工具调用"""
-        self.console.print(
-            f"  [{self.theme['tool_color']}]🔧 调用工具: {tool_name}[/]",
-            style="dim",
-        )
+        """渲染工具调用 - Claude Code紧凑风格"""
+        # 流式回复中若有缓冲,先输出它
+        if self._stream_buffer:
+            self._flush_stream_buffer()
+
+        # 格式化参数摘要
+        param_str = self._format_tool_params(tool_name, args)
+        line = f"⏺ [{self.theme['tool_color']}]{tool_name}[/]({param_str})"
+        if len(line) > 120:
+            line = line[:117] + "..."
+        self.console.print(line)
+
+    def _format_tool_params(self, tool_name: str, args: dict) -> str:
+        """格式化工具参数摘要"""
+        if tool_name == "read_file":
+            return args.get("path", "?")
+        elif tool_name == "write_file":
+            path = args.get("path", "?")
+            content = args.get("content", "")
+            size_kb = len(content) / 1024
+            if size_kb >= 1:
+                return f"{path}, {size_kb:.1f}KB"
+            else:
+                return f"{path}, {len(content)}B"
+        elif tool_name == "list_directory":
+            path = args.get("path", ".")
+            recursive = args.get("recursive", False)
+            return f"{path}, recursive" if recursive else path
+        elif tool_name == "run_command":
+            return args.get("command", "?")
+        elif tool_name == "web_request":
+            method = args.get("method", "GET")
+            url = args.get("url", "?")
+            return f"{method} {url}"
+        elif tool_name == "search_files":
+            pattern = args.get("pattern", "?")
+            path = args.get("path", ".")
+            return f'"{pattern}", path: {path}' if path != "." else f'"{pattern}"'
+        else:
+            # 未知工具 fallback
+            parts = []
+            for k, v in args.items():
+                v_str = str(v)
+                if len(v_str) > 60:
+                    v_str = v_str[:57] + "..."
+                parts.append(f"{k}={v_str}")
+            return ", ".join(parts) if parts else ""
+
+    def _flush_stream_buffer(self):
+        """输出流式缓冲区内容"""
+        if self._stream_buffer:
+            self.console.print(f"\n[{self.theme['assistant_color']}]🤖 Soul-agent:[/]")
+            self.console.print(Markdown(self._stream_buffer))
+            self._stream_buffer = ""
 
     def render_tool_result(self, tool_name: str, success: bool, output: str, error: str | None = None):
-        """渲染工具执行结果"""
-        display = output[:300] + ("..." if len(output) > 300 else "")
-        if success:
-            self.console.print(
-                f"  [{self.theme['tool_color']}]✅ {tool_name}[/] [dim]{display}[/]",
-                style="dim",
-            )
-        else:
-            self.console.print(
-                f"  [{self.theme['error_color']}]❌ {tool_name}: {error or display}[/]",
-                style="dim",
-            )
+        """渲染工具执行结果 - 连接符风格"""
+        connector = f"[{self.theme['connector_color']}]  ⎿[/] "
+
+        if not success:
+            self.console.print(f"{connector}[{self.theme['error_color']}]错误: {error or output}[/]")
+            return
+
+        # 成功结果 - 特殊处理read_file
+        if tool_name == "read_file":
+            lines = output.count("\n") + 1
+            self.console.print(f"{connector}读取 {lines} 行")
+            return
+
+        # 其他工具 - 显示前3行
+        lines = output.split("\n")
+        for i, line in enumerate(lines[:3]):
+            if i == 0:
+                self.console.print(f"{connector}{line}")
+            else:
+                self.console.print(f"    {line}")
+
+        if len(lines) > 3:
+            extra = len(lines) - 3
+            self.console.print(f"    [{self.theme['stats_color']}]… +{extra} 行[/]")
+
 
     def render_error(self, message: str):
         """渲染错误信息"""
@@ -127,27 +208,104 @@ class Renderer:
             lines.append(f"  {icon} {step.id}. {step.description}{tool_str}")
         return Panel("\n".join(lines), title="📋 执行计划", border_style="bright_cyan")
 
-    def render_plan_steps(self, tracker):
-        """渲染计划步骤进度面板，固定在终端底部原地刷新"""
-        if not tracker.steps:
-            return
+    def _build_live_content(self):
+        """构建统一Live区域的内容"""
+        parts = []
 
-        panel = self._build_plan_panel(tracker)
+        # 计划面板(如果有)
+        if self._plan_tracker and self._plan_tracker.steps:
+            parts.append(self._build_plan_panel(self._plan_tracker))
 
-        if self._plan_live is None:
-            self._plan_live = Live(
-                panel, console=self.console,
-                auto_refresh=True, transient=True, screen=False,
+        # Spinner状态行或流式Markdown
+        if self._stream_buffer:
+            # 流式回复显示
+            parts.append(Markdown(self._stream_buffer + " ▌"))
+        elif self._status_text:
+            # Spinner状态
+            spinner = Spinner("dots", text=self._status_text, style=self.theme["info_color"])
+            parts.append(spinner)
+
+        return Group(*parts) if parts else Text("")
+
+    def begin_turn(self):
+        """开始新的对话轮次,启动Live"""
+        self._stream_buffer = ""
+        self._stream_active = False
+        if self._live is None:
+            self._live = Live(
+                self._build_live_content(),
+                console=self.console,
+                auto_refresh=True,
+                transient=True,
+                screen=False,
             )
-            self._plan_live.start()
+            self._live.start()
         else:
-            self._plan_live.update(panel)
+            self._live.update(self._build_live_content())
+
+    def update_status(self, text: str):
+        """更新状态文本(spinner)"""
+        self._status_text = text
+        if self._live:
+            self._live.update(self._build_live_content())
+
+    def on_stream_chunk(self, chunk: str):
+        """接收流式回复块"""
+        self._stream_buffer += chunk
+        self._stream_active = True
+        if self._live:
+            self._live.update(self._build_live_content())
+
+    def end_turn(self, stats: dict | None = None, final_text: str = ""):
+        """结束对话轮次,停止Live并输出最终内容"""
+        # 停止Live
+        if self._live:
+            self._live.stop()
+            self._live = None
+
+        # 输出最终回复
+        if self._stream_active and final_text:
+            # 流式模式已经逐步显示,直接输出完整版
+            self.render_assistant(final_text)
+        elif final_text:
+            # 非流式fallback
+            self.render_assistant(final_text)
+
+        # 输出统计行
+        if stats:
+            parts = [f"[{self.theme['success_color']}]✓ 完成[/]"]
+            if stats.get("tool_calls", 0) > 0:
+                parts.append(f"{stats['tool_calls']} 次工具调用")
+            if stats.get("elapsed"):
+                parts.append(f"{stats['elapsed']:.1f}s")
+            if stats.get("tokens"):
+                tokens = stats["tokens"]
+                if tokens >= 1000:
+                    parts.append(f"{tokens/1000:.1f}k tokens")
+                else:
+                    parts.append(f"{tokens} tokens")
+            self.console.print(f"[{self.theme['stats_color']}]{' · '.join(parts)}[/]\n")
+
+        # 清空状态
+        self._status_text = ""
+        self._stream_buffer = ""
+        self._stream_active = False
+
+    def render_plan_steps(self, tracker):
+        """更新计划面板"""
+        self._plan_tracker = tracker
+        if self._live:
+            self._live.update(self._build_live_content())
 
     def clear_plan_live(self):
-        """停止计划面板的 Live 显示，恢复终端正常滚动"""
-        if self._plan_live:
-            self._plan_live.stop()
-            self._plan_live = None
+        """清除Live区域(兼容方法)"""
+        if self._live:
+            self._live.stop()
+            self._live = None
+        self._plan_tracker = None
+        self._status_text = ""
+        self._stream_buffer = ""
+
 
     def render_help(self):
         """渲染帮助信息"""
