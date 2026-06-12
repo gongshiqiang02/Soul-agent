@@ -96,7 +96,7 @@ agent = Agent(
 ```python
 agent.set_callbacks(
     on_tool_call=lambda name, args: print(f"调用工具: {name}"),
-    on_tool_result=lambda name, success, output, err: print(f"✅ {name}" if success else f"❌ {name}: {err}"),
+    on_tool_result=lambda name, success, output, err: print(f"✓ {name}" if success else f"✗ {name}: {err}"),
     on_plan_progress=lambda tracker: print(f"进度: {tracker.done_count}/{tracker.total_count}"),
     on_stream=lambda chunk: print(chunk, end=""),
     on_status=lambda text: print(text),
@@ -1839,23 +1839,9 @@ renderer.render_welcome()
 
 ---
 
-#### `render_user_input(text)`
-
-渲染用户输入内容。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `text` | `str` | 用户输入文本 |
-
-```python
-renderer.render_user_input("帮我查看项目结构")
-```
-
----
-
 #### `render_assistant(text)`
 
-以 Markdown 格式渲染助手回复。
+以 Markdown 格式渲染助手回复。`●` 圆点与正文首行同行，续行自动缩进 2 格对齐。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
@@ -1869,7 +1855,7 @@ renderer.render_assistant("项目结构如下：\n```\nsrc/\n├── main.py\n
 
 #### `render_tool_call(tool_name, args)`
 
-渲染工具调用信息。
+渲染工具调用信息。将工具行加入待定列表，在底部 Live 区域显示闪烁的白色圆点。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
@@ -1880,23 +1866,29 @@ renderer.render_assistant("项目结构如下：\n```\nsrc/\n├── main.py\n
 renderer.render_tool_call("read_file", {"path": "config.yaml"})
 ```
 
+**显示效果**：执行中圆点闪烁（白色明暗交替），等待 `render_tool_result` 定色输出。
+
 ---
 
 #### `render_tool_result(tool_name, success, output, error=None)`
 
-渲染工具执行结果。
+渲染工具执行结果。从待定列表取出工具行，以绿点（成功）或红点（失败）定格输出，紧接 `⎿` 连接符显示结果摘要。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `tool_name` | `str` | 工具名称 |
 | `success` | `bool` | 是否执行成功 |
-| `output` | `str` | 输出内容（成功时截断 300 字符，失败时为空） |
+| `output` | `str` | 输出内容 |
 | `error` | `str \| None` | 错误信息，成功时为 `None` |
 
 ```python
 renderer.render_tool_result("write_file", True, "已写入文件: output.txt")
 renderer.render_tool_result("read_file", False, "", "文件不存在: /bad/path")
 ```
+
+**显示效果**：
+- 成功：`● read_file(config.yaml)` 绿色圆点 + `⎿ 读取 50 行`
+- 失败：`● read_file(bad.txt)` 红色圆点 + `⎿ 错误: 文件不存在`
 
 ---
 
@@ -1912,7 +1904,7 @@ renderer.render_tool_result("read_file", False, "", "文件不存在: /bad/path"
 renderer.render_plan_steps(plan_tracker)
 ```
 
-**效果：** 在终端底部显示 `📋 执行计划` 面板，☑ 标记已完成步骤，☐ 标记待完成步骤，每步显示工具名。任务执行完成后由 `clear_plan_live()` 收起。
+**效果：** 在终端底部显示 `执行计划` 面板，✓ 标记已完成步骤，· 标记待完成步骤，每步显示工具名。任务执行完成后由 `clear_plan_live()` 收起。
 
 ---
 
@@ -2265,7 +2257,7 @@ async def main():
 
     agent.set_callbacks(
         on_tool_call=lambda name, args: print(f"🔧 {name}({args})"),
-        on_tool_result=lambda name, success, output, error: print(f"{'✅' if success else '❌'} {name}"),
+        on_tool_result=lambda name, success, output, error: print(f"{'✓' if success else '✗'} {name}"),
     )
 
     reply = await agent.run("读取 README.md 文件")

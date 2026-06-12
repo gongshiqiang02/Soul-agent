@@ -64,7 +64,7 @@ class Renderer:
 ```python
 def render_welcome(self, config=None, tool_count=0, memory_enabled=False):
     welcome = Text()
-    welcome.append("🤖 Soul-agent", style="bold bright_cyan")
+    welcome.append("soul-agent", style="bold bright_cyan")
     ...
     if config:
         welcome.append("模型: ", style="dim")
@@ -80,58 +80,59 @@ def render_welcome(self, config=None, tool_count=0, memory_enabled=False):
 - `border_style` 由主题控制
 - **新增**：显示模型、provider、工作目录、已启用工具数量、记忆系统状态（信息化）
 
-### 3.3 用户输入渲染
+### 3.3 助手回复渲染
 
 ```python
-def render_user_input(self, text: str):
-    self.console.print(f"\n[{self.theme['user_color']}]👤 You:[/] {text}")
-```
+def _with_marker(self, renderable):
+    """将内容与 ● 标记并排：圆点与首行同行，后续行缩进 2 格对齐"""
+    grid = Table.grid(expand=True)
+    grid.add_column(width=2)
+    grid.add_column(ratio=1, overflow="fold")
+    grid.add_row(f"[{self.theme['assistant_color']}]●[/]", renderable)
+    return grid
 
-用户输入以固定前缀 `👤 You:` 展示。
-
-### 3.4 助手回复渲染
-
-```python
 def render_assistant(self, text: str):
-    self.console.print(f"\n[{self.theme['assistant_color']}]🤖 Soul-agent:[/]")
+    """渲染助手回复（支持Markdown），圆点与正文首行同行"""
+    self.console.print()
     if not text or not text.strip():
-        self.console.print("  [dim](Agent 无输出)[/]")
+        self.console.print(f"[{self.theme['assistant_color']}]●[/] [dim](Agent 无输出)[/]")
         return
     try:
-        md = Markdown(text)
-        self.console.print(md)
+        self.console.print(self._with_marker(Markdown(text)))
     except Exception:
-        self.console.print(text)
+        self.console.print(self._with_marker(Text(text)))
 ```
 
 特点：
 
 1. 默认将助手回复作为 Markdown 渲染。
-2. 如果 Markdown 渲染失败，回退为普通文本。
-3. 渲染颜色来自当前主题。
-4. 空内容防御：当 Agent 返回空白（如 max_iterations 耗尽）时显示 `(Agent 无输出)` 而非空白行。
+2. `●` 圆点与正文首行同行，续行自动缩进 2 格对齐（Claude Code 风格）。
+3. 如果 Markdown 渲染失败，回退为普通文本。
+4. 渲染颜色来自当前主题。
+5. 空内容防御：当 Agent 返回空白（如 max_iterations 耗尽）时显示 `(Agent 无输出)` 而非空白行。
 
 这允许模型输出代码块、列表、标题等 Markdown 内容，终端中仍能保持较好的可读性。
 
-### 3.5 工具调用渲染
+### 3.4 工具调用渲染
 
 ```python
 def render_tool_call(self, tool_name: str, args: dict):
+    """渲染工具调用 - 执行中在Live区闪烁圆点，结果返回后定色输出"""
     # 流式回复中若有缓冲,先输出它
     if self._stream_buffer:
         self._flush_stream_buffer()
-    
-    # 格式化参数摘要
-    param_str = self._format_tool_params(tool_name, args)
-    line = f"⏺ [{self.theme['tool_color']}]{tool_name}[/]({param_str})"
-    if len(line) > 120:
-        line = line[:117] + "..."
-    self.console.print(line)
+
+    self._pending_tools.append((tool_name, self._format_tool_line(tool_name, args)))
+    if self._live:
+        self._live.update(self._build_live_content())
 ```
 
 该方法由 Agent 的 `on_tool_call` 回调触发。**Claude Code 紧凑风格**：
 
-- 格式：`⏺ tool_name(参数摘要)`
+- 格式：`● tool_name(参数摘要)`
+- **执行中**：圆点在 Live 区域白色明暗闪烁（每 0.5 秒交替）
+- **成功后**：圆点变为绿色 (#00d700)
+- **失败后**：圆点变为红色
 - 内置工具智能格式化（见 `_format_tool_params`）：
   - `read_file` → 显示 path
   - `write_file` → 显示 path + content 大小（如 `1.2KB`）
@@ -143,11 +144,24 @@ def render_tool_call(self, tool_name: str, args: dict):
 - 整行截断 120 字符
 - **修复核心问题**：之前只显示工具名，现在参数可见
 
-### 3.6 工具结果渲染
+### 3.5 工具结果渲染
 
 ```python
 def render_tool_result(self, tool_name: str, success: bool, output: str, error: str | None = None):
-    """渲染工具执行结果 - 连接符风格"""
+    """渲染工具执行结果 - 圆点定色(绿=成功/红=失败) + 连接符摘要"""
+    dot_color = self.theme["success_color"] if success else self.theme["error_color"]
+    line = Text()
+    line.append("● ", style=dot_color)
+    body = self._pop_pending_tool(tool_name)
+    if body is not None:
+        line.append_text(body)
+    else:
+        line.append(tool_name, style=self.theme["tool_color"])
+    self.console.print()
+    self.console.print(line)
+    if self._live:
+        self._live.update(self._build_live_content())
+
     connector = f"[{self.theme['connector_color']}]  ⎿[/] "
     
     if not success:
@@ -175,13 +189,15 @@ def render_tool_result(self, tool_name: str, success: bool, output: str, error: 
 
 该方法由 Agent 的 `on_tool_result` 回调触发：
 
+- **圆点状态变化**：执行中白色闪烁 → 成功绿色 (#00d700) → 失败红色
 - **连接符风格**：使用 `⎿` 连接符（类似 Claude Code 的 tree 风格）
 - **read_file 优化**：成功时只显示 `⎿ 读取 N 行`，不倾倒全部内容
 - **其他工具**：显示前 3 行，超出显示 `… +N 行`（dim 颜色）
 - **失败**：红色 `⎿ 错误: xxx`
+- **消息块间距**：每个工具调用块前自动留一行空行
 - **解决了之前问题**：不再截断 300 字符挤在一行，可读性大幅提升
 
-### 3.7 统一 Live 管理与流式渲染
+### 3.6 统一 Live 管理与流式渲染
 
 ```python
 def _build_live_content(self):
@@ -189,12 +205,15 @@ def _build_live_content(self):
     parts = []
     if self._plan_tracker and self._plan_tracker.steps:
         parts.append(self._build_plan_panel(self._plan_tracker))
+    if self._pending_tools:
+        parts.append(_BlinkingToolLines(self._pending_tools))
     if self._stream_buffer:
-        parts.append(Markdown(self._stream_buffer + " ▌"))
+        parts.append(self._with_marker(Markdown(self._stream_buffer + " ▌")))
     elif self._status_text:
         spinner = Spinner("dots", text=self._status_text, style=self.theme["info_color"])
         parts.append(spinner)
-    return Group(*parts) if parts else Text("")
+    # 顶部留一行空行，与上方已输出内容隔开
+    return Group(Text(""), *parts) if parts else Text("")
 
 def begin_turn(self):
     """开始新的对话轮次,启动Live"""
@@ -248,22 +267,24 @@ def end_turn(self, stats: dict | None = None, final_text: str = ""):
 
 **核心架构改进**：
 
-- **统一 Live 实例**：Rich 只允许一个活动 Live，计划面板/spinner/流式输出必须合并
-- **动态内容组合**：`_build_live_content()` 用 `Group` 组合多个元素
-- **三种状态**：
+- **统一 Live 实例**：Rich 只允许一个活动 Live，计划面板/闪烁工具行/spinner/流式输出必须合并
+- **动态内容组合**：`_build_live_content()` 用 `Group` 组合多个元素，顶部留一行空行与上方内容隔开
+- **四种状态**：
   1. 思考中 → 显示 Spinner + 状态文本（如 `✻ 思考中… (第 N 轮)`）
-  2. 流式回复 → 显示 Markdown(缓冲 + "▌" 光标)
-  3. 计划执行 → 同时显示计划面板和状态
-- **离散事件**：工具调用/结果用 `console.print()` 直接输出，自动滚动到 Live 上方
+  2. 工具执行中 → 显示闪烁的工具调用行（白色圆点明暗交替）
+  3. 流式回复 → 显示 `● Markdown(缓冲 + "▌" 光标)`，圆点与首行同行
+  4. 计划执行 → 同时显示计划面板和其他状态
+- **离散事件**：工具调用结果用 `console.print()` 直接输出，自动滚动到 Live 上方
 - **流式渲染**：`on_stream_chunk` 逐块累积，Live 实时更新 Markdown
-- **回合统计**：`end_turn` 输出 `✓ 完成 · N 次工具调用 · X.Xs · Xk tokens`
+- **回合统计**：`end_turn` 输出 `✓ 完成 · N 次工具调用 · X.Xs · Xk tokens`（绿色对勾）
 - **transient 模式**：Live 停止后不留痕迹
+- **消息块间距**：各消息块之间自动留一行空行
 
 ### 3.8 错误与提示信息
 
 ```python
 def render_error(self, message: str):
-    self.console.print(f"[{self.theme['error_color']}]❌ {message}[/]")
+    self.console.print(f"[{self.theme['error_color']}]✗ {message}[/]")
 
 
 def render_info(self, message: str):
@@ -276,7 +297,7 @@ def render_info(self, message: str):
 
 ```python
 def render_memory_list(self, memories: list):
-    table = Table(title="📝 记忆列表", show_header=True, header_style="bold bright_cyan")
+    table = Table(title="记忆列表", show_header=True, header_style="bold bright_cyan")
     table.add_column("类型", style="yellow", width=12)
     table.add_column("内容", style="white")
     table.add_column("重要性", style="green", width=8)
@@ -396,7 +417,7 @@ async def get_input(self, prompt_text: str = ">>> ") -> str:
     "info_color": "dim",
     "border_color": "bright_blue",
     "connector_color": "dim",          # 新增：⎿ 连接符
-    "success_color": "bright_green",   # 新增：成功提示
+    "success_color": "#00d700",        # 新增：成功提示（绿色圆点、✓ 对勾）
     "stats_color": "dim",              # 新增：统计行
 }
 ```
@@ -411,7 +432,7 @@ async def get_input(self, prompt_text: str = ">>> ") -> str:
 | `info_color` | 普通提示 |
 | `border_color` | Panel 边框 |
 | `connector_color` | 工具结果连接符 `⎿` |
-| `success_color` | 成功提示（如统计行的 `✓`） |
+| `success_color` | 成功提示（工具成功的绿色圆点、统计行的 `✓` 对勾，#00d700） |
 | `stats_color` | 统计行文本 |
 
 ### 5.2 内置主题
@@ -471,7 +492,6 @@ while True:
     user_input = await input_handler.get_input()
     ...
     renderer.clear_plan_live()  # 清除上一轮Live
-    renderer.render_user_input(user_input)
     
     try:
         renderer.begin_turn()  # 启动Live

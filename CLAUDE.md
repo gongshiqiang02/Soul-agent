@@ -109,14 +109,16 @@ SoulAgentError（基础）
 ### 终端 UI（`ui/`）
 
 - `Renderer` — 基于 Rich 的渲染器，参考 Claude Code 紧凑风格
-  - **统一 Live 区域**：底部 transient Live 显示 spinner/计划面板/流式 Markdown
-  - **工具调用显示**：`⏺ tool_name(参数摘要)` 格式，内置工具智能格式化参数
+  - **统一 Live 区域**：底部 transient Live 显示 spinner/计划面板/流式 Markdown，顶部与上方内容留一行空行
+  - **工具调用显示**：`● tool_name(参数摘要)` 格式，执行中圆点闪烁，成功变绿(#00d700)，失败变红
   - **工具结果显示**：`⎿` 连接符 + 摘要（read_file 显示行数，其他显示前3行）
+  - **助手回复**：`●` 圆点与正文首行同行，续行自动缩进 2 格对齐
   - **流式回复**：逐块累积到缓冲区，Live 实时更新 Markdown
   - **回合统计**：`✓ 完成 · N 次工具调用 · X.Xs · Xk tokens`
   - **信息化欢迎界面**：显示模型、provider、工作目录、工具数、记忆状态
+  - **消息块间距**：用户输入、每条工具调用块、每条助手回复、统计行之间都有一行空行
 - `InputHandler` — 基于 prompt_toolkit，带历史记录和自动补全
-- `themes.py` — 3 套主题（monokai、dracula、default），新增 connector_color、success_color、stats_color
+- `themes.py` — 3 套主题（monokai、dracula、default），颜色包含 connector_color、success_color(#00d700)、stats_color
 
 **关键约束**：
 - Rich 只允许一个活动 Live 实例，计划面板/spinner/流式输出必须合并到统一 Live

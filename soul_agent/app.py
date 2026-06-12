@@ -100,14 +100,14 @@ async def _chat_loop(agent, renderer, config, input_handler):
         if user_input.startswith("/"):
             cmd = user_input.lower().strip()
             if cmd == "/quit" or cmd == "/exit":
-                renderer.render_info("👋 再见！")
+                renderer.render_info("Goodbye!")
                 break
             elif cmd == "/help":
                 renderer.render_help()
                 continue
             elif cmd == "/clear":
                 agent.reset()
-                renderer.render_info("✅ 对话历史已清除")
+                renderer.render_info("✓ 对话历史已清除")
                 continue
             elif cmd == "/memory":
                 if agent.memory:
@@ -130,7 +130,7 @@ async def _chat_loop(agent, renderer, config, input_handler):
                 else:
                     new_name = parts[1].strip()
                     await agent.rename_conversation(new_name)
-                    renderer.render_info(f"✅ 会话已重命名为: {new_name}")
+                    renderer.render_info(f"✓ 会话已重命名为: {new_name}")
                 continue
             elif cmd == "/config":
                 renderer.render_info(f"模型: {config.llm.model}")
@@ -141,8 +141,6 @@ async def _chat_loop(agent, renderer, config, input_handler):
                 continue
 
         # 正常对话
-        renderer.render_user_input(user_input)
-
         try:
             renderer.begin_turn()
             response = await agent.run(user_input)

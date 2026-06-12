@@ -10,7 +10,7 @@ THEMES = {
         "info_color": "dim",
         "border_color": "bright_blue",
         "connector_color": "dim",
-        "success_color": "bright_green",
+        "success_color": "#00d700",
         "stats_color": "dim",
     },
     "dracula": {
@@ -22,7 +22,7 @@ THEMES = {
         "info_color": "dim",
         "border_color": "purple",
         "connector_color": "dim",
-        "success_color": "green",
+        "success_color": "#00d700",
         "stats_color": "dim",
     },
     "default": {
@@ -34,7 +34,7 @@ THEMES = {
         "info_color": "dim",
         "border_color": "white",
         "connector_color": "dim",
-        "success_color": "green",
+        "success_color": "#00d700",
         "stats_color": "dim",
     },
 }

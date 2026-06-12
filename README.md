@@ -1,4 +1,4 @@
-<h1 align="center">🤖 Soul-agent</h1>
+<h1 align="center">Soul-agent</h1>
 
 <p align="center">
   <strong>更懂你的通用 Agent —— 基于 LLM 的终端智能助手</strong>
@@ -18,7 +18,7 @@ Soul-agent 是一个运行在终端中的 AI 智能助手。它不仅能通过�
 
 | 功能 | 说明 |
 |------|------|
-| 🤖 **智能对话** | 基于 LLM 的多轮自然语言对话，支持流式输出 |
+| **智能对话** | 基于 LLM 的多轮自然语言对话，支持流式输出 |
 | 🔧 **工具调用** | 自动执行文件操作、Shell 命令、网络请求等，采用 ReAct 推理循环 |
 | 🧠 **长期记忆** | 自动提取并持久化用户偏好与关键信息，智能混合检索召回 |
 | 📝 **文档读写** | 读取、生成、编辑各类文档 |
@@ -148,7 +148,7 @@ soul-agent chat
 
 ```
 ┌──────────────────────────────────────────────┐
-│ 🤖 Soul-agent — 更懂你的通用Agent            │
+│ soul-agent — 更懂你的通用Agent               │
 │ 模型: gpt-4o-mini                            │
 │ Provider: openai                             │
 │ 工作目录: E:\Projects\Soul-agent             │
@@ -163,14 +163,13 @@ soul-agent chat
 
 ✻ 思考中… (第 1 轮)
 
-⏺ list_directory(.)
+● list_directory(.)
   ⎿ [目录] soul_agent
     [文件] README.md
     [文件] pyproject.toml
     … +8 行
 
-🤖 Soul-agent:
-当前目录包含以下内容：
+● 当前目录包含以下内容：
 - **soul_agent/** - 主程序包目录
 - **README.md** - 项目说明文档
 - **pyproject.toml** - 项目配置文件

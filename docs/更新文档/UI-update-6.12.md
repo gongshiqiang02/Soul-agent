@@ -13,14 +13,14 @@
 **问题**: 原先 `render_tool_call` 只显示工具名称，用户看不到 Agent 在调用什么参数。
 
 **解决方案**: 
-- 格式：`⏺ tool_name(参数摘要)`
+- 格式：`● tool_name(参数摘要)`
 - 针对 6 个内置工具实现智能参数格式化：
-  - `read_file(path)` → `⏺ read_file(README.md)`
-  - `write_file(path, content)` → `⏺ write_file(report.md, 1.2KB)`
-  - `list_directory(path)` → `⏺ list_directory(., recursive)`
-  - `run_command(command)` → `⏺ run_command(git log --oneline -5)`
-  - `web_request(method, url)` → `⏺ web_request(GET https://api.example.com)`
-  - `search_files(pattern, path)` → `⏺ search_files("TODO", path: src/)`
+  - `read_file(path)` → `● read_file(README.md)`
+  - `write_file(path, content)` → `● write_file(report.md, 1.2KB)`
+  - `list_directory(path)` → `● list_directory(., recursive)`
+  - `run_command(command)` → `● run_command(git log --oneline -5)`
+  - `web_request(method, url)` → `● web_request(GET https://api.example.com)`
+  - `search_files(pattern, path)` → `● search_files("TODO", path: src/)`
 - 未知工具自动 fallback 为 `k=v` 序列，值超长自动截断
 
 **代码位置**: `soul_agent/ui/renderer.py:69-116`
@@ -37,7 +37,7 @@
 
 **示例输出**:
 ```
-⏺ list_directory(.)
+● list_directory(.)
   ⎿ [目录] soul_agent
     [文件] README.md
     [文件] pyproject.toml
@@ -122,7 +122,7 @@
 
 新增 3 个颜色 token:
 - `connector_color` — `⎿` 连接符（dim）
-- `success_color` — 成功提示（green）
+- `success_color` — 成功提示（#00d700，工具成功圆点和统计行对勾）
 - `stats_color` — 统计行（dim）
 
 `get_theme()` 改为与 default 主题合并，确保缺失 key 不崩溃。
@@ -193,14 +193,13 @@ All checks passed!
 
 ✻ 思考中… (第 1 轮)
 
-⏺ list_directory(.)
+● list_directory(.)
   ⎿ [目录] soul_agent
     [文件] README.md
     [文件] pyproject.toml
     … +8 行
 
-🤖 Soul-agent:
-(流式逐字显示)
+● (流式逐字显示)
 当前目录包含以下内容：
 - **soul_agent/** - 主程序包目录
 ...
