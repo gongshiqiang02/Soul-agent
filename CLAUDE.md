@@ -20,7 +20,7 @@ soul-agent config          # 查看当前配置
 # 测试
 pytest tests/ -v                              # 全部 42 个测试
 pytest tests/test_agent.py -v                 # Agent 核心（10 个）
-pytest tests/test_memory.py -v                # 记忆系统（14 个）
+pytest tests/test_memory.py -v                # 记忆系统（20 个）
 pytest tests/test_tools.py -v                 # 工具系统（18 个）
 
 # 代码检查
@@ -66,7 +66,7 @@ Agent 实现 **ReAct（Reasoning + Acting）** 模式，每次 `run(user_input)`
 | `MemoryRetriever` | ChromaDB + 关键词 | 混合检索：语义相似度 50% + 重要性 30% + 时间衰减 20%（半衰期 72h） |
 | `ConversationSummarizer` | LLM 调用 | 对话摘要生成 |
 
-`MemoryManager` 是统一入口，协调上述所有组件。每次对话轮次后，由 LLM 通过 `EXTRACT_MEMORIES_PROMPT` 判断是否提取记忆，低于 `importance_threshold`（默认 0.3）的记忆不存储。ChromaDB 不可用时自动降级为关键词搜索。
+`MemoryManager` 是统一入口，协调上述所有组件。每次对话轮次后，由 LLM 通过 `EXTRACT_MEMORIES_PROMPT` 判断是否提取记忆，低于 `importance_threshold`（默认 0.5）的记忆不存储。存储时双重去重：向量相似度近似去重（阈值 0.80）+ SHA-256 内容哈希精确去重（UNIQUE 约束）。ChromaDB 不可用时自动降级为关键词搜索。
 
 ### LLM 适配层（`llm/`）
 
