@@ -1,5 +1,6 @@
 """Agent核心测试"""
 
+import asyncio
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -161,8 +162,43 @@ class TestAgent:
     async def test_agent_reset(self, mock_config, mock_llm, mock_memory, mock_registry, mock_executor):
         agent = Agent(mock_config, mock_llm, mock_memory, mock_registry, mock_executor)
         await agent.run("你好")
+        await agent.drain_background_tasks()
         agent.reset()
         assert len(agent.conversation.messages) == 0
+
+    @pytest.mark.asyncio
+    async def test_memory_update_does_not_block_response(
+        self, mock_config, mock_llm, mock_registry, mock_executor
+    ):
+        class SlowMemory:
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+                self.args = None
+
+            async def retrieve(self, query):
+                return []
+
+            async def create_conversation_with_id(self, conversation_id):
+                return conversation_id
+
+            async def process_turn(self, user_input, assistant_reply):
+                self.args = (user_input, assistant_reply)
+                self.started.set()
+                await self.release.wait()
+
+        memory = SlowMemory()
+        agent = Agent(mock_config, mock_llm, memory, mock_registry, mock_executor)
+
+        result = await asyncio.wait_for(agent.run("你好"), timeout=0.2)
+
+        assert result == "这是回复"
+        await asyncio.wait_for(memory.started.wait(), timeout=0.2)
+        assert memory.args == ("你好", "这是回复")
+
+        memory.release.set()
+        await agent.drain_background_tasks()
+        assert agent._background_tasks == set()
 
 
 def _make_minimal_agent():

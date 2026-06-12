@@ -1,5 +1,6 @@
 """Agent主循环 - ReAct模式"""
 
+import asyncio
 import json
 import uuid
 from soul_agent.core.conversation import Conversation
@@ -41,6 +42,7 @@ class Agent:
         self._on_tool_result = None  # callback for tool results
         self._on_status = None  # callback for status updates
         self.last_run_stats = {}  # 最近一次运行的统计信息
+        self._background_tasks: set[asyncio.Task] = set()
 
     def set_callbacks(self, on_tool_call=None, on_stream=None, on_plan_progress=None, on_tool_result=None, on_status=None):
         """设置UI回调"""
@@ -191,14 +193,7 @@ class Agent:
                     "任务尚未完成，可以输入 '继续' 来恢复执行。"
                 )
 
-        # 5. 更新记忆
-        if self.memory:
-            try:
-                await self.memory.process_turn(user_input, final_content)
-            except Exception as e:
-                logger.warning(f"记忆更新失败: {e}")
-
-        # 6. 添加助手最终回复到对话历史，并裁剪过长的历史
+        # 5. 添加助手最终回复到对话历史，并裁剪过长的历史
         self.conversation.messages.append({"role": "assistant", "content": final_content})
         self.conversation._schedule_persist("assistant", final_content)
         # 保留最近 20 轮对话（含工具消息），防止上下文过长
@@ -206,7 +201,7 @@ class Agent:
         if len(self.conversation.messages) > max_msgs:
             self.conversation.messages = self.conversation.messages[-max_msgs:]
 
-        # 7. 记录统计信息
+        # 6. 记录统计信息。长期记忆提取在后台执行，不计入用户可见响应耗时。
         elapsed = time.time() - start_time
         self.last_run_stats = {
             "iterations": i + 1,
@@ -215,7 +210,47 @@ class Agent:
             "tokens": total_tokens if total_tokens > 0 else None,
         }
 
+        # 7. 后台更新长期记忆，避免回复结束后继续阻塞下一次输入。
+        self._schedule_memory_update(user_input, final_content)
+
         return final_content
+
+    def _schedule_memory_update(self, user_input: str, final_content: str):
+        """后台更新记忆，避免阻塞 Agent 响应收尾。"""
+        if not self.memory:
+            return
+        try:
+            task = asyncio.create_task(
+                self._process_memory_update(user_input, final_content)
+            )
+        except RuntimeError:
+            logger.warning("记忆更新调度失败：当前没有运行中的事件循环")
+            return
+
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(self._consume_background_task_result)
+
+    async def _process_memory_update(self, user_input: str, final_content: str):
+        try:
+            await self.memory.process_turn(user_input, final_content)
+        except Exception as e:
+            logger.warning(f"记忆更新失败: {e}")
+
+    @staticmethod
+    def _consume_background_task_result(task: asyncio.Task):
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"后台任务失败: {e}")
+
+    async def drain_background_tasks(self):
+        """等待当前已调度的后台任务完成。主要用于测试或程序退出前收尾。"""
+        if not self._background_tasks:
+            return
+        await asyncio.gather(*tuple(self._background_tasks), return_exceptions=True)
 
     def _estimate_complexity(self, user_input: str) -> int:
         """快速估算任务复杂度（0-10）。零 LLM 开销，纯启发式。"""

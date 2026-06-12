@@ -2,7 +2,7 @@
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 
 from soul_agent.memory.short_term import ShortTermMemory
 from soul_agent.memory.long_term import LongTermMemory
@@ -201,7 +201,7 @@ async def test_store_near_duplicate_detected(tmp_path):
 
     # 存储原始记忆
     id1 = await db.store("用户喜欢Python编程", "preference", 0.8)
-    retriever.add_embedding(id1, "用户喜欢Python编程", metadata={"memory_type": "preference"})
+    await retriever.add_embedding(id1, "用户喜欢Python编程", metadata={"memory_type": "preference"})
 
     # 检查近似重复
     is_dup, existing_id = retriever.check_duplicate("用户喜欢用Python写代码", threshold=0.75)

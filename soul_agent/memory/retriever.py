@@ -1,6 +1,8 @@
 """记忆检索器 - 混合评分检索"""
+import asyncio
 import math
 from datetime import datetime
+from threading import RLock
 
 from soul_agent.utils.logger import logger
 from soul_agent.memory.long_term import LongTermMemory, MemoryEntry
@@ -20,6 +22,7 @@ class MemoryRetriever:
         self.long_term = long_term
         self._collection = None
         self._chroma_client = None
+        self._chroma_lock = RLock()
 
         if CHROMADB_AVAILABLE:
             try:
@@ -41,27 +44,38 @@ class MemoryRetriever:
     def has_vector_search(self) -> bool:
         return self._collection is not None
 
-    def add_embedding(self, memory_id: str, content: str, metadata: dict | None = None):
+    async def add_embedding(self, memory_id: str, content: str,
+                            metadata: dict | None = None):
         """Add a memory's embedding to ChromaDB."""
         if not self.has_vector_search:
             return
         try:
-            self._collection.upsert(
-                ids=[memory_id],
-                documents=[content],
-                metadatas=[metadata or {}],
+            await asyncio.to_thread(
+                self._upsert_embedding, memory_id, content, metadata or {}
             )
         except Exception as e:
             logger.warning(f"Failed to add embedding: {e}")
 
-    def delete_embedding(self, memory_id: str):
+    def _upsert_embedding(self, memory_id: str, content: str, metadata: dict):
+        with self._chroma_lock:
+            self._collection.upsert(
+                ids=[memory_id],
+                documents=[content],
+                metadatas=[metadata],
+            )
+
+    async def delete_embedding(self, memory_id: str):
         """Remove a memory's embedding from ChromaDB."""
         if not self.has_vector_search:
             return
         try:
-            self._collection.delete(ids=[memory_id])
+            await asyncio.to_thread(self._delete_embedding, memory_id)
         except Exception as e:
             logger.warning(f"Failed to delete embedding: {e}")
+
+    def _delete_embedding(self, memory_id: str):
+        with self._chroma_lock:
+            self._collection.delete(ids=[memory_id])
 
     def check_duplicate(self, content: str, threshold: float = 0.80) -> tuple[bool, str | None]:
         """通过向量相似度检查是否存在近似重复记忆。
@@ -126,10 +140,7 @@ class MemoryRetriever:
 
     async def _vector_search(self, query: str, top_k: int) -> list[MemoryEntry]:
         """Search using ChromaDB vector similarity."""
-        results = self._collection.query(
-            query_texts=[query],
-            n_results=top_k,
-        )
+        results = await asyncio.to_thread(self._query_collection, query, top_k)
 
         if not results["ids"] or not results["ids"][0]:
             return []
@@ -149,6 +160,13 @@ class MemoryRetriever:
                 entries.append(entry)
 
         return entries
+
+    def _query_collection(self, query: str, top_k: int):
+        with self._chroma_lock:
+            return self._collection.query(
+                query_texts=[query],
+                n_results=top_k,
+            )
 
     async def _keyword_search(self, query: str, top_k: int) -> list[MemoryEntry]:
         """Fallback: keyword-based search."""

@@ -81,9 +81,9 @@ agent = Agent(
 
 ---
 
-#### `set_callbacks(on_tool_call=None, on_stream=None, on_plan_progress=None, on_tool_result=None)`
+#### `set_callbacks(on_tool_call=None, on_stream=None, on_plan_progress=None, on_tool_result=None, on_status=None)`
 
-注册 UI 回调函数，用于在工具调用、工具结果、计划进度或流式输出时通知前端。
+注册 UI 回调函数，用于在工具调用、工具结果、计划进度、流式输出或状态更新时通知前端。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
@@ -91,6 +91,7 @@ agent = Agent(
 | `on_tool_result` | `Callable \| None` | 工具执行后触发，参数 `(tool_name, success, output, error_or_None)` |
 | `on_plan_progress` | `Callable \| None` | 计划进度更新时触发，参数 `(plan_tracker)` |
 | `on_stream` | `Callable \| None` | 流式输出时触发的回调 |
+| `on_status` | `Callable \| None` | 状态更新时触发，参数 `(status_text)` |
 
 ```python
 agent.set_callbacks(
@@ -98,6 +99,7 @@ agent.set_callbacks(
     on_tool_result=lambda name, success, output, err: print(f"✅ {name}" if success else f"❌ {name}: {err}"),
     on_plan_progress=lambda tracker: print(f"进度: {tracker.done_count}/{tracker.total_count}"),
     on_stream=lambda chunk: print(chunk, end=""),
+    on_status=lambda text: print(text),
 )
 ```
 
@@ -107,7 +109,7 @@ agent.set_callbacks(
 
 主入口方法。接收一条用户输入，经过 ReAct（推理-行动）循环处理后返回最终回复文本。
 
-流程：构建消息 → 调用 LLM → 判断是否需要工具调用 → 执行工具 → 再次调用 LLM → 返回最终回复。
+流程：检索记忆 → 构建消息 → 调用 LLM → 判断是否需要工具调用 → 执行工具 → 再次调用 LLM → 记录统计 → 调度后台记忆更新 → 返回最终回复。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
@@ -115,9 +117,21 @@ agent.set_callbacks(
 
 **返回值：** `str` — 助手的最终回复文本。
 
+长期记忆提取不阻塞该方法返回。`run()` 会在最终回复写入 `Conversation` 后调度后台任务执行 `MemoryManager.process_turn()`，因此 UI 可以在统计行输出后立即进入下一次输入。
+
 ```python
 reply = await agent.run("帮我读取 config.yaml 文件的内容")
 print(reply)
+```
+
+---
+
+#### `async drain_background_tasks()`
+
+等待当前 Agent 已调度的后台维护任务完成。主要用于测试或程序退出前收尾；正常交互中不需要每轮调用。应用入口的退出路径（`run_chat()` 聊天循环结束后、`run_ask()` 回复输出后）会自动调用该方法，确保最后一轮的记忆提取在事件循环关闭前完成。
+
+```python
+await agent.drain_background_tasks()
 ```
 
 ---
@@ -496,7 +510,9 @@ for m in memories:
 
 #### `async process_turn(user_input, assistant_reply)`
 
-处理一轮对话，使用 LLM 自动提取值得记住的信息。仅当提取到的记忆重要性超过 `importance_threshold`（由配置决定）时才会存储。
+处理一轮对话，先写入短期记忆，再使用 LLM 自动提取值得长期记住的信息。仅当提取到的记忆重要性超过 `importance_threshold`（由配置决定）时才会存储。
+
+在标准 Agent 流程中，该方法由 `Agent._schedule_memory_update()` 后台调度，不会阻塞 `Agent.run()` 返回。手动直接调用时仍然需要 `await`，调用方会等待记忆提取和存储完成。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
@@ -514,7 +530,7 @@ await mm.process_turn(
 
 #### `async store(content, memory_type, importance=0.5, metadata=None) -> str`
 
-手动存储一条记忆。执行**双写**：同时写入 SQLite（结构化存储）和 ChromaDB（向量索引）。
+手动存储一条记忆。执行**双写**：同时写入 SQLite（结构化存储）和 ChromaDB（向量索引）。ChromaDB 的同步 `upsert` 会通过线程执行，避免阻塞事件循环。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -985,9 +1001,9 @@ if retriever.has_vector_search:
 
 ---
 
-#### `add_embedding(memory_id, content, metadata=None)`
+#### `async add_embedding(memory_id, content, metadata=None)`
 
-为一条记忆添加向量嵌入到 ChromaDB。
+为一条记忆添加向量嵌入到 ChromaDB。内部通过 `asyncio.to_thread()` 执行同步 `collection.upsert()`。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
@@ -996,21 +1012,21 @@ if retriever.has_vector_search:
 | `metadata` | `dict \| None` | 附加元数据 |
 
 ```python
-retriever.add_embedding(memory_id, "用户偏好使用 Vim 编辑器")
+await retriever.add_embedding(memory_id, "用户偏好使用 Vim 编辑器")
 ```
 
 ---
 
-#### `delete_embedding(memory_id)`
+#### `async delete_embedding(memory_id)`
 
-从 ChromaDB 删除指定记忆的向量嵌入。
+从 ChromaDB 删除指定记忆的向量嵌入。内部通过 `asyncio.to_thread()` 执行同步 `collection.delete()`。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `memory_id` | `str` | 记忆 ID |
 
 ```python
-retriever.delete_embedding("a1b2c3d4-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+await retriever.delete_embedding("a1b2c3d4-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
 ```
 
 ---

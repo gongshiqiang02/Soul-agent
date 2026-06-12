@@ -66,6 +66,15 @@ async def run_chat():
 
     input_handler = InputHandler()
 
+    try:
+        await _chat_loop(agent, renderer, config, input_handler)
+    finally:
+        # 退出前等待后台记忆更新完成，避免最后一轮记忆丢失
+        await agent.drain_background_tasks()
+
+
+async def _chat_loop(agent, renderer, config, input_handler):
+    """聊天循环主体，从 run_chat 拆出以便退出时统一收尾"""
     # 设置工具调用回调
     agent.set_callbacks(
         on_tool_call=lambda name, args: renderer.render_tool_call(name, args),
@@ -163,6 +172,8 @@ async def run_ask(message: str):
         renderer.begin_turn()
         response = await agent.run(message)
         renderer.end_turn(agent.last_run_stats, response)
+        # 单次模式下事件循环即将结束，必须等待后台记忆更新完成，否则任务被取消
+        await agent.drain_background_tasks()
     except Exception as e:
         renderer.end_turn()  # 确保Live被停止
         renderer.render_error(f"处理失败: {e}")

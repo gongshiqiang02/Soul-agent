@@ -118,14 +118,16 @@ class MemoryManager:
             metadata=metadata,
         )
         # 同时写入向量数据库
-        self.retriever.add_embedding(memory_id, content, metadata={"memory_type": memory_type})
+        await self.retriever.add_embedding(
+            memory_id, content, metadata={"memory_type": memory_type}
+        )
         logger.debug(f"已存储记忆 {memory_id}: {content[:50]}...")
         return memory_id
 
     async def forget(self, memory_id: str):
         """Delete a memory from both stores."""
         await self.long_term.delete(memory_id)
-        self.retriever.delete_embedding(memory_id)
+        await self.retriever.delete_embedding(memory_id)
         logger.debug(f"Deleted memory {memory_id}")
 
     async def list_all(self, memory_type: str | None = None) -> list[MemoryEntry]:
