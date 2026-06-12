@@ -20,21 +20,3 @@ SYSTEM_PROMPT = """你是 Soul-agent，一个运行在终端中的智能助手�
 ## 可用工具
 {tool_descriptions}
 """
-
-MEMORY_EXTRACTION_PROMPT = """分析以下对话，提取值得长期记忆的信息。
-
-提取规则：
-1. 用户的个人信息（姓名、职业、偏好等）→ type: fact
-2. 用户表达的偏好（喜欢/不喜欢）→ type: preference
-3. 重要事件或决定 → type: event
-4. 不提取临时性、无长期价值的信息
-
-输出JSON格式：
-{
-  "should_memorize": true/false,
-  "memories": [
-    {"content": "...", "type": "...", "importance": 0.0-1.0}
-  ]
-}
-
-只输出JSON，不要其他内容。"""
