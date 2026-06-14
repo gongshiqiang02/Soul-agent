@@ -3,8 +3,20 @@
 import json
 
 from openai import AsyncOpenAI
+from openai import (
+    AuthenticationError,
+    RateLimitError,
+    APIConnectionError,
+    APITimeoutError,
+    APIStatusError,
+    BadRequestError,
+    PermissionDeniedError,
+    NotFoundError,
+    InternalServerError,
+)
 
 from soul_agent.config.settings import LLMConfig
+from soul_agent.utils.exceptions import LLMError
 from soul_agent.utils.logger import logger
 
 
@@ -45,13 +57,34 @@ class OpenAIProvider:
             return await self._normal_chat(**kwargs)
 
     async def _normal_chat(self, **kwargs) -> LLMResponse:
-        response = await self.client.chat.completions.create(**kwargs)
-        choice = response.choices[0]
-        return LLMResponse(
-            content=choice.message.content or "",
-            tool_calls=self._parse_tool_calls(choice.message.tool_calls),
-            usage=response.usage,
-        )
+        try:
+            response = await self.client.chat.completions.create(**kwargs)
+            choice = response.choices[0]
+            return LLMResponse(
+                content=choice.message.content or "",
+                tool_calls=self._parse_tool_calls(choice.message.tool_calls),
+                usage=response.usage,
+            )
+        except AuthenticationError as e:
+            raise LLMError(f"API认证失败，请检查API Key是否正确: {e}") from e
+        except RateLimitError as e:
+            raise LLMError(f"API请求频率超限，请稍后重试: {e}") from e
+        except APIConnectionError as e:
+            raise LLMError(f"无法连接到API服务器，请检查网络或base_url配置: {e}") from e
+        except APITimeoutError as e:
+            raise LLMError(f"API请求超时，请稍后重试: {e}") from e
+        except BadRequestError as e:
+            raise LLMError(f"请求参数错误: {e}") from e
+        except PermissionDeniedError as e:
+            raise LLMError(f"没有权限访问该API: {e}") from e
+        except NotFoundError as e:
+            raise LLMError(f"API端点不存在，请检查base_url配置: {e}") from e
+        except InternalServerError as e:
+            raise LLMError(f"API服务器内部错误: {e}") from e
+        except APIStatusError as e:
+            raise LLMError(f"API返回错误状态码 {e.status_code}: {e}") from e
+        except Exception as e:
+            raise LLMError(f"LLM调用失败: {e}") from e
 
     async def _stream_chat(self, on_delta=None, **kwargs) -> LLMResponse:
         """流式聊天,支持tools和usage获取"""
@@ -102,13 +135,31 @@ class OpenAIProvider:
                             if tc_delta.function.arguments:
                                 tool_calls_dict[idx]["arguments"] += tc_delta.function.arguments
 
-        except Exception as e:
+        except AuthenticationError as e:
+            raise LLMError(f"API认证失败，请检查API Key是否正确: {e}") from e
+        except RateLimitError as e:
+            raise LLMError(f"API请求频率超限，请稍后重试: {e}") from e
+        except APIConnectionError as e:
+            raise LLMError(f"无法连接到API服务器，请检查网络或base_url配置: {e}") from e
+        except APITimeoutError as e:
+            raise LLMError(f"API请求超时，请稍后重试: {e}") from e
+        except BadRequestError as e:
             # 若stream_options不支持,重试不带usage
             if "stream_options" in str(e) and "stream_options" in kwargs:
                 logger.warning("后端不支持stream_options,重试不获取usage")
                 del kwargs["stream_options"]
                 return await self._stream_chat(on_delta=on_delta, **kwargs)
-            raise
+            raise LLMError(f"请求参数错误: {e}") from e
+        except PermissionDeniedError as e:
+            raise LLMError(f"没有权限访问该API: {e}") from e
+        except NotFoundError as e:
+            raise LLMError(f"API端点不存在，请检查base_url配置: {e}") from e
+        except InternalServerError as e:
+            raise LLMError(f"API服务器内部错误: {e}") from e
+        except APIStatusError as e:
+            raise LLMError(f"API返回错误状态码 {e.status_code}: {e}") from e
+        except Exception as e:
+            raise LLMError(f"LLM调用失败: {e}") from e
 
         # 解析tool_calls的arguments
         tool_calls = []

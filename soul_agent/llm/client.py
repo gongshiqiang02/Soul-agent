@@ -3,6 +3,7 @@
 from soul_agent.config.settings import LLMConfig
 from soul_agent.llm.providers.local import LocalProvider
 from soul_agent.llm.providers.openai import LLMResponse, OpenAIProvider
+from soul_agent.utils.exceptions import LLMError
 from soul_agent.utils.logger import logger
 
 
@@ -22,6 +23,10 @@ class LLMClient:
     async def chat(self, messages, tools=None, stream=False, on_delta=None) -> LLMResponse:
         try:
             return await self.provider.chat(messages, tools=tools, stream=stream, on_delta=on_delta)
-        except Exception as e:
-            logger.error(f"LLM调用失败: {e}")
+        except LLMError:
+            # 已经是LLMError，直接重新抛出
             raise
+        except Exception as e:
+            # 其他未预期的异常，包装为LLMError
+            logger.error(f"LLM调用失败: {e}")
+            raise LLMError(f"LLM调用失败: {e}") from e

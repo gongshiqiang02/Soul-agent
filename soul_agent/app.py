@@ -9,6 +9,7 @@ from soul_agent.tools.builtin import register_builtin_tools
 from soul_agent.core.agent import Agent
 from soul_agent.ui.renderer import Renderer
 from soul_agent.ui.input import InputHandler
+from soul_agent.utils.exceptions import LLMError
 from soul_agent.utils.logger import logger
 
 
@@ -145,6 +146,11 @@ async def _chat_loop(agent, renderer, config, input_handler):
             renderer.begin_turn()
             response = await agent.run(user_input)
             renderer.end_turn(agent.last_run_stats, response)
+        except LLMError as e:
+            renderer.end_turn()  # 确保Live被停止
+            renderer.render_error(f"LLM调用失败: {e}")
+            # LLMError是预期的用户配置错误，不需要堆栈跟踪
+            logger.warning(f"LLM调用错误: {e}")
         except Exception as e:
             renderer.end_turn()  # 确保Live被停止
             renderer.render_error(f"处理失败: {e}")
@@ -172,6 +178,11 @@ async def run_ask(message: str):
         renderer.end_turn(agent.last_run_stats, response)
         # 单次模式下事件循环即将结束，必须等待后台记忆更新完成，否则任务被取消
         await agent.drain_background_tasks()
+    except LLMError as e:
+        renderer.end_turn()  # 确保Live被停止
+        renderer.render_error(f"LLM调用失败: {e}")
+        # LLMError是预期的用户配置错误，不需要堆栈跟踪
+        logger.warning(f"LLM调用错误: {e}")
     except Exception as e:
         renderer.end_turn()  # 确保Live被停止
         renderer.render_error(f"处理失败: {e}")
